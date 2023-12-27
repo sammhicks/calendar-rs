@@ -1,0 +1,100 @@
+HTTP/1.0 200 OK
+Content-Type: text/html; charset=UTF-8
+Connection: close
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calendar</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        section {
+            width: 100vw;
+            height: 100vh;
+            page-break-after: always;
+
+            display: flex;
+            flex-flow: column nowrap;
+        }
+
+        .row {
+            display: flex;
+            flex-flow: row nowrap;
+
+            border-bottom-style: solid;
+        }
+
+        .cell {
+            display: flex;
+            flex-flow: column nowrap;
+        }
+
+        .row,
+        .cell {
+            border-width: 1px;
+            border-color: black;
+        }
+
+        .header {
+            text-align: center;
+        }
+
+        .cell:not(:first-child) {
+            border-left-style: solid;
+        }
+
+        .flexrow,
+        .row>* {
+            flex: 1;
+        }
+
+        .shadedBackground,
+        .cell:nth-child(6),
+        .cell:nth-child(7) {
+            background-color: rgb(255, 255, 128);
+        }
+    </style>
+</head>
+
+<body>
+    {% for (month, events) in events %}
+    <section>
+        <div class="header shadedBackground">{{month.name()}} {{year}}</div>
+        <div class="header row">
+            <span>Monday</span>
+            <span>Tuesday</span>
+            <span>Wednesday</span>
+            <span>Thursday</span>
+            <span>Friday</span>
+            <span class="shadedBackground">Saturday</span>
+            <span class="shadedBackground">Sunday</span>
+        </div>
+        {% for row in events.chunks_exact(7) %}
+        <div class="row flexrow">
+            {% for day in row %}
+            {% match day %}
+            {% when Some with ((day, events)) %}
+            <span class="cell">
+                <span class="event">{{day}}</span>
+                {% for event in events %}
+                <span class="event">{{event}}</span>
+                {% endfor %}
+            </span>
+            {% when None %}
+            <span class="cell"></span>
+            {% endmatch %}
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </section>
+    {% endfor %}
+</body>
+
+</html>
