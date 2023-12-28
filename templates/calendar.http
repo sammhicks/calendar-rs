@@ -22,6 +22,8 @@ Connection: close
 
             display: flex;
             flex-flow: column nowrap;
+
+            border-style: solid solid;
         }
 
         .row {
@@ -31,14 +33,19 @@ Connection: close
             border-bottom-style: solid;
         }
 
+        .row:last-child {
+            border-bottom-style: none;
+        }
+
         .cell {
             display: flex;
             flex-flow: column nowrap;
         }
 
+        section,
         .row,
         .cell {
-            border-width: 1px;
+            border-width: 1pt;
             border-color: black;
         }
 
@@ -58,7 +65,11 @@ Connection: close
         .shadedBackground,
         .cell:nth-child(6),
         .cell:nth-child(7) {
-            background-color: rgb(255, 255, 128);
+            background-color: rgb(255, 255, 153);
+        }
+
+        .event {
+            color: red;
         }
     </style>
 </head>
@@ -82,7 +93,7 @@ Connection: close
             {% match day %}
             {% when Some with ((day, events)) %}
             <span class="cell">
-                <span class="event">{{day}}</span>
+                <span>{{day}}</span>
                 {% for event in events %}
                 <span class="event">{{event}}</span>
                 {% endfor %}
