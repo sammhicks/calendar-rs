@@ -164,12 +164,17 @@ struct EventGroup {
     events: Vec<Event>,
 }
 
+#[derive(Clone)]
+enum CalendarCell {
+    Empty,
+    Day { day: u32, events: Vec<String> },
+    MonthAndYear { month: Month, year: i32 },
+}
+
 #[derive(Template)]
 #[template(path = "calendar.http", escape = "html")]
 struct Calendar {
-    year: i32,
-    #[allow(clippy::type_complexity)]
-    events: Vec<(Month, Vec<Option<(u32, Vec<String>)>>)>,
+    events: Vec<Vec<CalendarCell>>,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -184,6 +189,12 @@ struct Args {
     calendar_file: Option<std::path::PathBuf>,
     #[clap(short, long)]
     year: Option<i32>,
+    #[clap(short = 'a', long)]
+    include_all_events: bool,
+    #[clap(short = 'e', long)]
+    include_events: Option<Vec<String>>,
+    #[clap(long)]
+    list_event_groups: bool,
 }
 
 fn find_date(
@@ -206,6 +217,9 @@ fn main() -> color_eyre::eyre::Result<()> {
     let Args {
         calendar_file,
         year,
+        include_all_events,
+        include_events,
+        list_event_groups,
     } = clap::Parser::parse();
 
     color_eyre::install()?;
@@ -326,30 +340,44 @@ fn main() -> color_eyre::eyre::Result<()> {
         ],
     });
 
+    if list_event_groups {
+        for EventGroup { title, .. } in event_groups {
+            println!("{title}");
+        }
+
+        return Ok(());
+    }
+
     let mut calendar_events = HashMap::new();
 
     for EventGroup { title, events } in event_groups {
-        let include_group = loop {
-            print!("Include {title:?} (y/n)?: ");
-            stdout.flush().wrap_err("Failed to flush stdout")?;
+        let include_group = include_all_events
+            || match &include_events {
+                Some(include_events) => include_events
+                    .iter()
+                    .any(|include_events| include_events.eq_ignore_ascii_case(&title)),
+                None => loop {
+                    print!("Include {title:?} (y/n)?: ");
+                    stdout.flush().wrap_err("Failed to flush stdout")?;
 
-            break match stdin
-                .next()
-                .transpose()
-                .wrap_err("Failed to read from stdin")?
-                .unwrap_or_default()
-                .trim()
-                .to_lowercase()
-                .as_str()
-            {
-                "" | "y" | "yes" => true,
-                "n" | "no" => false,
-                _ => {
-                    println!(r#"Please enter "y" or "n""#);
-                    continue;
-                }
+                    break match stdin
+                        .next()
+                        .transpose()
+                        .wrap_err("Failed to read from stdin")?
+                        .unwrap_or_default()
+                        .trim()
+                        .to_lowercase()
+                        .as_str()
+                    {
+                        "" | "y" | "yes" => true,
+                        "n" | "no" => false,
+                        _ => {
+                            println!(r#"Please enter "y" or "n""#);
+                            continue;
+                        }
+                    };
+                },
             };
-        };
 
         if !include_group {
             continue;
@@ -370,7 +398,6 @@ fn main() -> color_eyre::eyre::Result<()> {
     }
 
     let calendar = Calendar {
-        year,
         events: MONTHS
             .iter()
             .map(|&month| {
@@ -380,23 +407,22 @@ fn main() -> color_eyre::eyre::Result<()> {
                         .weekday()
                         .num_days_from_monday() as usize;
 
-                (
-                    month,
-                    std::iter::repeat(None)
-                        .take(days_before_start)
-                        .chain((1..=days_in_month(year, month)).map(|day| {
-                            Some((
-                                day,
-                                calendar_events
-                                    .get(&MonthAndDay { month, day })
-                                    .map(Vec::as_slice)
-                                    .unwrap_or_default()
-                                    .into(),
-                            ))
-                        }))
-                        .chain(std::iter::repeat(None).take(7))
-                        .collect(),
-                )
+                std::iter::repeat(CalendarCell::Empty)
+                    .take(days_before_start)
+                    .chain((1..=days_in_month(year, month)).map(|day| {
+                        CalendarCell::Day {
+                            day,
+                            events: calendar_events
+                                .get(&MonthAndDay { month, day })
+                                .map(Vec::as_slice)
+                                .unwrap_or_default()
+                                .into(),
+                        }
+                    }))
+                    .chain(std::iter::repeat(CalendarCell::Empty))
+                    .take(33)
+                    .chain(std::iter::once(CalendarCell::MonthAndYear { month, year }))
+                    .collect()
             })
             .collect(),
     };
