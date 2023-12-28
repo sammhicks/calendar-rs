@@ -135,10 +135,14 @@ impl Event {
                     .filter_map(|&month| {
                         let day = chrono::NaiveDate::from_weekday_of_month_opt(
                             year,
-                            month as u32,
+                            month.number_from_month(),
                             weekday,
                             day as u8,
-                        )?
+                        )
+                        .or_else(|| {
+                            println!("{day}'th {weekday} of {} is out of range", month.name());
+                            None
+                        })?
                         .day0()
                             + 1;
 
@@ -183,18 +187,29 @@ struct MonthAndDay {
     day: u32,
 }
 
+#[derive(clap::Subcommand)]
+enum Command {
+    /// List all event groups and exit
+    ListEventGroups,
+}
+
 #[derive(clap::Parser)]
 struct Args {
+    /// The calendar to read events from
     #[clap(short, long)]
     calendar_file: Option<std::path::PathBuf>,
+    /// The year to create a calendar for
     #[clap(short, long)]
     year: Option<i32>,
+    /// Include events from all event groups
     #[clap(short = 'a', long)]
     include_all_events: bool,
-    #[clap(short = 'e', long)]
+    /// Include events from the following event group. Can be included multiple times to included events from multiple event groups.
+    #[clap(short = 'e', long, value_name = "EVENT GROUP NAME")]
     include_events: Option<Vec<String>>,
-    #[clap(long)]
-    list_event_groups: bool,
+    /// List all event groups and exit
+    #[clap(subcommand)]
+    command: Option<Command>,
 }
 
 fn find_date(
@@ -219,7 +234,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         year,
         include_all_events,
         include_events,
-        list_event_groups,
+        command,
     } = clap::Parser::parse();
 
     color_eyre::install()?;
@@ -340,12 +355,16 @@ fn main() -> color_eyre::eyre::Result<()> {
         ],
     });
 
-    if list_event_groups {
-        for EventGroup { title, .. } in event_groups {
-            println!("{title}");
-        }
+    #[allow(clippy::single_match)]
+    match command {
+        Some(Command::ListEventGroups) => {
+            for EventGroup { title, .. } in event_groups {
+                println!("{title}");
+            }
 
-        return Ok(());
+            return Ok(());
+        }
+        None => {}
     }
 
     let mut calendar_events = HashMap::new();
