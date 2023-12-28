@@ -342,7 +342,7 @@ fn main() -> color_eyre::eyre::Result<()> {
                 .to_lowercase()
                 .as_str()
             {
-                "y" | "yes" => true,
+                "" | "y" | "yes" => true,
                 "n" | "no" => false,
                 _ => {
                     println!(r#"Please enter "y" or "n""#);
