@@ -6,6 +6,7 @@ use std::{
 use askama::Template;
 use chrono::{Datelike, Month, Weekday};
 use color_eyre::eyre::Context;
+use itertools::Itertools;
 
 const MONTHS: [Month; 12] = [
     Month::January,
@@ -53,6 +54,30 @@ const WEEKDAYS: [Weekday; 7] = [
     Weekday::Sat,
     Weekday::Sun,
 ];
+
+trait WeekdayExt {
+    fn name(self) -> &'static str;
+
+    fn is_weekend(self) -> bool;
+}
+
+impl WeekdayExt for Weekday {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Mon => "Monday",
+            Self::Tue => "Tuesday",
+            Self::Wed => "Wednesday",
+            Self::Thu => "Thursday",
+            Self::Fri => "Friday",
+            Self::Sat => "Saturday",
+            Self::Sun => "Sunday",
+        }
+    }
+
+    fn is_weekend(self) -> bool {
+        matches!(self, Self::Sat | Self::Sun)
+    }
+}
 
 #[derive(Debug)]
 struct Event {
@@ -115,18 +140,9 @@ impl Event {
         }
 
         for weekday in WEEKDAYS {
-            let weekday_name = match weekday {
-                Weekday::Mon => "Monday",
-                Weekday::Tue => "Tuesday",
-                Weekday::Wed => "Wednesday",
-                Weekday::Thu => "Thursday",
-                Weekday::Fri => "Friday",
-                Weekday::Sat => "Saturday",
-                Weekday::Sun => "Sunday",
-            };
-
-            if weekday_name.eq_ignore_ascii_case(month_or_weekday)
-                || weekday_name
+            if weekday.name().eq_ignore_ascii_case(month_or_weekday)
+                || weekday
+                    .name()
                     .get(0..3)
                     .is_some_and(|month_name| month_name.eq_ignore_ascii_case(month_or_weekday))
             {
@@ -168,7 +184,6 @@ struct EventGroup {
     events: Vec<Event>,
 }
 
-#[derive(Clone)]
 enum CalendarCell {
     Empty,
     Day { day: u32, events: Vec<String> },
@@ -181,6 +196,26 @@ struct Calendar {
     events: Vec<Vec<CalendarCell>>,
 }
 
+enum DiaryCell {
+    Empty,
+    Day {
+        weekday: Weekday,
+        day: u32,
+        events: Vec<String>,
+    },
+}
+
+struct DiaryPage {
+    month: Month,
+    cells: Vec<DiaryCell>,
+}
+
+#[derive(Template)]
+#[template(path = "diary.http", escape = "html")]
+struct Diary {
+    pages: Vec<Vec<DiaryPage>>,
+}
+
 #[derive(PartialEq, Eq, Hash)]
 struct MonthAndDay {
     month: Month,
@@ -191,6 +226,15 @@ struct MonthAndDay {
 enum Command {
     /// List all event groups and exit
     ListEventGroups,
+    /// Generate a Calendar
+    Calendar,
+    /// Generate a Diary
+    Diary,
+}
+
+enum Output {
+    Calendar,
+    Diary,
 }
 
 #[derive(clap::Parser)]
@@ -212,21 +256,21 @@ struct Args {
     command: Option<Command>,
 }
 
-fn find_date(
-    year: i32,
-    month: Month,
-    day: u32,
-    target: Weekday,
-    direction: i64,
-) -> chrono::NaiveDate {
-    let mut date = chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), day).unwrap();
+// fn find_date(
+//     year: i32,
+//     month: Month,
+//     day: u32,
+//     target: Weekday,
+//     direction: i64,
+// ) -> chrono::NaiveDate {
+//     let mut date = chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), day).unwrap();
 
-    while date.weekday() != target {
-        date += chrono::Duration::days(direction);
-    }
+//     while date.weekday() != target {
+//         date += chrono::Duration::days(direction);
+//     }
 
-    date
-}
+//     date
+// }
 
 fn main() -> color_eyre::eyre::Result<()> {
     let Args {
@@ -246,7 +290,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         Some(calendar_file) => calendar_file,
         None => {
             print!("Enter Calendar File: ");
-            stdout.flush().wrap_err("Failed to flush stdout")?;
+            stdout.flush().unwrap();
 
             let Some(next_line) = stdin.next() else {
                 return Ok(());
@@ -265,7 +309,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         Some(year) => year,
         None => loop {
             print!("Enter year: ");
-            stdout.flush().wrap_err("Failed to flush stdout")?;
+            stdout.flush().unwrap();
 
             let Some(next_line) = stdin.next() else {
                 return Ok(());
@@ -341,22 +385,21 @@ fn main() -> color_eyre::eyre::Result<()> {
         .collect::<Result<_, _>>()?,
     });
 
-    event_groups.push(EventGroup {
-        title: "British Summer Time".into(),
-        events: vec![
-            Event::new(
-                find_date(year, Month::March, 31, Weekday::Sun, -1),
-                "BST Begins".into(),
-            )?,
-            Event::new(
-                find_date(year, Month::October, 31, Weekday::Sun, -1),
-                "BST Ends".into(),
-            )?,
-        ],
-    });
+    // event_groups.push(EventGroup {
+    //     title: "British Summer Time".into(),
+    //     events: vec![
+    //         Event::new(
+    //             find_date(year, Month::March, 31, Weekday::Sun, -1),
+    //             "BST Begins".into(),
+    //         )?,
+    //         Event::new(
+    //             find_date(year, Month::October, 31, Weekday::Sun, -1),
+    //             "BST Ends".into(),
+    //         )?,
+    //     ],
+    // });
 
-    #[allow(clippy::single_match)]
-    match command {
+    let output = match command {
         Some(Command::ListEventGroups) => {
             for EventGroup { title, .. } in event_groups {
                 println!("{title}");
@@ -364,8 +407,28 @@ fn main() -> color_eyre::eyre::Result<()> {
 
             return Ok(());
         }
-        None => {}
-    }
+        Some(Command::Calendar) => Output::Calendar,
+        Some(Command::Diary) => Output::Diary,
+        None => loop {
+            print!("What would you like to generate?");
+            stdout.flush().unwrap();
+
+            break match stdin
+                .next()
+                .transpose()
+                .unwrap()
+                .unwrap_or_default()
+                .as_str()
+            {
+                "calendar" => Output::Calendar,
+                "diary" => Output::Diary,
+                _ => {
+                    println!(r#"Please enter "calendar" or "diary""#);
+                    continue;
+                }
+            };
+        },
+    };
 
     let mut calendar_events = HashMap::new();
 
@@ -377,12 +440,12 @@ fn main() -> color_eyre::eyre::Result<()> {
                     .any(|include_events| include_events.eq_ignore_ascii_case(&title)),
                 None => loop {
                     print!("Include {title:?} (y/n)?: ");
-                    stdout.flush().wrap_err("Failed to flush stdout")?;
+                    stdout.flush().unwrap();
 
                     break match stdin
                         .next()
                         .transpose()
-                        .wrap_err("Failed to read from stdin")?
+                        .unwrap()
                         .unwrap_or_default()
                         .trim()
                         .to_lowercase()
@@ -416,35 +479,69 @@ fn main() -> color_eyre::eyre::Result<()> {
         }
     }
 
-    let calendar = Calendar {
-        events: MONTHS
-            .iter()
-            .map(|&month| {
-                let days_before_start =
-                    chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), 1)
-                        .unwrap()
-                        .weekday()
-                        .num_days_from_monday() as usize;
+    let output = match output {
+        Output::Calendar => Calendar {
+            events: MONTHS
+                .iter()
+                .map(|&month| {
+                    let days_before_start =
+                        chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), 1)
+                            .unwrap()
+                            .weekday()
+                            .num_days_from_monday() as usize;
 
-                std::iter::repeat(CalendarCell::Empty)
-                    .take(days_before_start)
-                    .chain((1..=days_in_month(year, month)).map(|day| {
-                        CalendarCell::Day {
+                    std::iter::repeat_with(|| CalendarCell::Empty)
+                        .take(days_before_start)
+                        .chain((1..=days_in_month(year, month)).map(|day| {
+                            CalendarCell::Day {
+                                day,
+                                events: calendar_events
+                                    .remove(&MonthAndDay { month, day })
+                                    .unwrap_or_default(),
+                            }
+                        }))
+                        .chain(std::iter::repeat_with(|| CalendarCell::Empty))
+                        .take(33)
+                        .chain(std::iter::once(CalendarCell::MonthAndYear { month, year }))
+                        .collect()
+                })
+                .collect(),
+        }
+        .render(),
+        Output::Diary => Diary {
+            pages: MONTHS
+                .iter()
+                .flat_map(|&month| {
+                    (1..=days_in_month(year, month))
+                        .map(|day| DiaryCell::Day {
+                            weekday: chrono::NaiveDate::from_ymd_opt(
+                                year,
+                                month.number_from_month(),
+                                day,
+                            )
+                            .unwrap()
+                            .weekday(),
                             day,
                             events: calendar_events
-                                .get(&MonthAndDay { month, day })
-                                .map(Vec::as_slice)
-                                .unwrap_or_default()
-                                .into(),
-                        }
-                    }))
-                    .chain(std::iter::repeat(CalendarCell::Empty))
-                    .take(33)
-                    .chain(std::iter::once(CalendarCell::MonthAndYear { month, year }))
-                    .collect()
-            })
-            .collect(),
-    };
+                                .remove(&MonthAndDay { month, day })
+                                .unwrap_or_default(),
+                        })
+                        .chain(std::iter::repeat_with(|| DiaryCell::Empty))
+                        .chunks(16)
+                        .into_iter()
+                        .map(Vec::from_iter)
+                        .take(2)
+                        .map(|cells| DiaryPage { month, cells })
+                        .collect_vec()
+                })
+                .chunks(8)
+                .into_iter()
+                .map(Vec::from_iter)
+                .collect(),
+        }
+        .render(),
+    }
+    .unwrap();
 
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .wrap_err("Failed to listen over HTTP")?;
@@ -471,9 +568,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         }
     }
 
-    calendar
-        .write_into(&mut socket)
-        .wrap_err("Failed to write HTTP response")?;
-
-    Ok(())
+    socket
+        .write_all(output.as_bytes())
+        .wrap_err("Failed to write HTTP response")
 }

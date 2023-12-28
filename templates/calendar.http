@@ -122,7 +122,7 @@ Connection: close
             {% when CalendarCell::MonthAndYear with {month, year} %}
             <span class="cell month_and_year"><span>{{month.name()}} {{year}}</span></span>
             {% endmatch %}
-        {% endfor %}
+            {% endfor %}
         </main>
     </section>
     {% endfor %}

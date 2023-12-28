@@ -1,0 +1,90 @@
+HTTP/1.0 200 OK
+Content-Type: text/html; charset=UTF-8
+Connection: close
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diary</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+
+            font-size: calc(100vh / 80);
+        }
+
+        body>div {
+            display: grid;
+            grid-template-rows: 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            grid-auto-flow: column;
+
+            width: 100vw;
+            height: 100vh;
+            page-break-after: always;
+        }
+
+        .shadedBackground {
+            background-color: rgb(255, 255, 153);
+        }
+
+        span.date {
+            font-family: monospace;
+        }
+
+        section {
+            margin-right: 1ch;
+            margin-bottom: 1em;
+
+            display: flex;
+            flex-flow: column nowrap;
+        }
+
+        section>* {
+            border-bottom: 1pt solid black;
+        }
+
+        section>div {
+            flex: 1;
+
+            display: flex;
+            flex-flow: row nowrap;
+            align-items: center;
+        }
+
+        section>div>span {
+            margin-right: 1ch;
+        }
+    </style>
+</head>
+
+<body>
+    {% for page_group in pages %}
+    <div>
+        {% for DiaryPage { month, cells } in page_group %}
+        <section>
+            <header>{{month.name()}}</header>
+            {% for cell in cells %}
+            {% match cell %}
+            {% when DiaryCell::Empty %}
+            <div></div>
+            {% when DiaryCell::Day with { weekday, day, events } %}
+            <div {% if weekday.is_weekend() %}class="shadedBackground" {% endif %}>
+                <span class="date">{{weekday.name()[0..3]}} {{"{:02}"|format(day)}}</span>
+                {% for event in events %}
+                <span>{{event}}</span>
+                {% endfor %}
+            </div>
+            {% endmatch %}
+            {% endfor %}
+        </section>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</body>
+
+</html>
