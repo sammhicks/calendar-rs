@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt,
     io::{BufRead, Write},
     str::FromStr,
 };
@@ -86,19 +87,45 @@ fn find_date(
     date
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum GroupId {
+    #[default]
+    NoGroup,
+    Group(usize),
+}
+
+impl fmt::Display for GroupId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoGroup => Ok(()),
+            Self::Group(id) => write!(f, "eventgroup{id}"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Event {
     month: Month,
     day: u32,
     title: String,
+    group_id: GroupId,
 }
 
 impl Event {
-    fn new(date: chrono::NaiveDate, title: String) -> color_eyre::eyre::Result<Self> {
+    fn new(
+        date: chrono::NaiveDate,
+        title: String,
+        group_id: GroupId,
+    ) -> color_eyre::eyre::Result<Self> {
         let month = Month::try_from((date.month0() + 1) as u8).wrap_err("Failed to get month")?;
         let day = date.day0() + 1;
 
-        Ok(Self { month, day, title })
+        Ok(Self {
+            month,
+            day,
+            title,
+            group_id,
+        })
     }
 
     fn nth_weekday(
@@ -107,6 +134,7 @@ impl Event {
         weekday: Weekday,
         index: i16,
         title: &str,
+        group_id: GroupId,
     ) -> Option<Self> {
         match index.cmp(&0) {
             std::cmp::Ordering::Equal => {
@@ -119,7 +147,7 @@ impl Event {
                 let event_day = first + chrono::Duration::weeks((index - 1).into());
 
                 (event_day.with_day0(first.day0()) == Some(first))
-                    .then(|| Self::new(event_day, title.into()).ok())
+                    .then(|| Self::new(event_day, title.into(), group_id).ok())
                     .flatten()
             }
             std::cmp::Ordering::Less => {
@@ -128,7 +156,7 @@ impl Event {
                 let event_day = last + chrono::Duration::weeks((index + 1).into());
 
                 (event_day.with_day0(last.day0()) == Some(last))
-                    .then(|| Self::new(event_day, title.into()).ok())
+                    .then(|| Self::new(event_day, title.into(), group_id).ok())
                     .flatten()
             }
         }
@@ -139,7 +167,7 @@ impl Event {
         })
     }
 
-    fn parse(input: &str, year: i32) -> color_eyre::eyre::Result<Vec<Self>> {
+    fn parse(input: &str, year: i32, group_id: GroupId) -> color_eyre::eyre::Result<Vec<Self>> {
         let Some((index, category, title)) = Some(input).and_then(|input| {
             let space_or_tab = |c: char| c == ' ' || c == '\t';
 
@@ -165,6 +193,7 @@ impl Event {
             vec![Self::new(
                 easter + chrono::Duration::days(index.into()),
                 title.into(),
+                group_id,
             )?]
         } else if let Some((weekday, month)) =
             category.split_once('/').and_then(|(weekday, month)| {
@@ -174,7 +203,7 @@ impl Event {
                 ))
             })
         {
-            Event::nth_weekday(year, month, weekday, index, title)
+            Event::nth_weekday(year, month, weekday, index, title, group_id)
                 .into_iter()
                 .collect()
         } else if let Ok(month) = Month::from_str(category) {
@@ -189,11 +218,14 @@ impl Event {
                         color_eyre::eyre::eyre!("Invalid date {year}/{}/{index}", month.name())
                     })?,
                 title.into(),
+                group_id,
             )?]
         } else if let Ok(weekday) = Weekday::from_str(category) {
             MONTHS
                 .iter()
-                .filter_map(|&month| Self::nth_weekday(year, month, weekday, index, title))
+                .filter_map(|&month| {
+                    Self::nth_weekday(year, month, weekday, index, title, group_id)
+                })
                 .collect()
         } else {
             color_eyre::eyre::bail!("Invalid event: {input}")
@@ -203,19 +235,34 @@ impl Event {
 
 #[derive(Debug)]
 struct EventGroup {
+    id: GroupId,
     title: String,
+    style: Option<String>,
     events: Vec<Event>,
+}
+
+#[derive(Default)]
+struct EventWithGroupId {
+    title: String,
+    group_id: GroupId,
 }
 
 enum CalendarCell {
     Empty,
-    Day { day: u32, events: Vec<String> },
-    MonthAndYear { month: Month, year: i32 },
+    Day {
+        day: u32,
+        events: Vec<EventWithGroupId>,
+    },
+    MonthAndYear {
+        month: Month,
+        year: i32,
+    },
 }
 
 #[derive(Template)]
 #[template(path = "calendar.http", escape = "html")]
 struct Calendar {
+    calendar_event_styles: Vec<(GroupId, String)>,
     events: Vec<Vec<CalendarCell>>,
 }
 
@@ -224,7 +271,7 @@ enum DiaryCell {
     Day {
         weekday: Weekday,
         day: u32,
-        events: Vec<String>,
+        events: Vec<EventWithGroupId>,
     },
 }
 
@@ -236,6 +283,7 @@ struct DiaryPage {
 #[derive(Template)]
 #[template(path = "diary.http", escape = "html")]
 struct Diary {
+    calendar_event_styles: Vec<(GroupId, String)>,
     pages: Vec<Vec<DiaryPage>>,
 }
 
@@ -346,14 +394,22 @@ fn main() -> color_eyre::eyre::Result<()> {
         }
 
         if let Some(line) = line.strip_prefix('[') {
-            let Some(title) = line.strip_suffix(']') else {
+            let Some(title_and_style) = line.strip_suffix(']') else {
                 color_eyre::eyre::bail!(
                     "Error on line {line_num}: Event Group titles must end with a ']'"
                 );
             };
 
+            let (title, style) = title_and_style
+                .split_once(':')
+                .map(|(title, style)| (title.trim(), Some(style.into())))
+                .unwrap_or((title_and_style, None));
+            let id = GroupId::Group(event_groups.len());
+
             event_groups.push(EventGroup {
+                id,
                 title: title.trim().into(),
+                style,
                 events: Vec::new(),
             });
         } else {
@@ -361,7 +417,11 @@ fn main() -> color_eyre::eyre::Result<()> {
                 color_eyre::eyre::bail!("Calendar must start with an event group");
             };
 
-            current_group.events.extend(Event::parse(line, year)?)
+            let group_id = current_group.id;
+
+            current_group
+                .events
+                .extend(Event::parse(line, year, group_id)?)
         }
     }
 
@@ -397,8 +457,15 @@ fn main() -> color_eyre::eyre::Result<()> {
     };
 
     let mut calendar_events = HashMap::new();
+    let mut calendar_event_styles = Vec::new();
 
-    for EventGroup { title, events } in event_groups {
+    for EventGroup {
+        id: group_id,
+        title,
+        style,
+        events,
+    } in event_groups
+    {
         let include_group = include_all_events
             || match &include_events {
                 Some(include_events) => include_events
@@ -431,16 +498,27 @@ fn main() -> color_eyre::eyre::Result<()> {
             continue;
         }
 
-        for Event { month, day, title } in events {
+        if let Some(style) = style {
+            calendar_event_styles.push((group_id, style));
+        }
+
+        for Event {
+            month,
+            day,
+            title,
+            group_id,
+        } in events
+        {
             calendar_events
                 .entry(MonthAndDay { month, day })
                 .or_insert_with(Vec::new)
-                .push(title);
+                .push(EventWithGroupId { title, group_id });
         }
     }
 
     let output = match output {
         Output::Calendar => Calendar {
+            calendar_event_styles,
             events: MONTHS
                 .iter()
                 .map(|&month| {
@@ -469,6 +547,7 @@ fn main() -> color_eyre::eyre::Result<()> {
         }
         .render(),
         Output::Diary => Diary {
+            calendar_event_styles,
             pages: MONTHS
                 .iter()
                 .flat_map(|&month| {

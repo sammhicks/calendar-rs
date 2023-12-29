@@ -59,6 +59,10 @@ Connection: close
         section>div>span {
             margin-right: 1ch;
         }
+
+        {% for (id, style) in calendar_event_styles %}
+        .{{id}} { {{style}} }
+        {% endfor %}
     </style>
 </head>
 
@@ -76,7 +80,7 @@ Connection: close
             <div {% if weekday.is_weekend() %}class="shadedBackground" {% endif %}>
                 <span class="date">{{weekday.name()[0..3]}} {{"{:02}"|format(day)}}</span>
                 {% for event in events %}
-                <span>{{event}}</span>
+                <span class="{{event.group_id}}">{{event.title}}</span>
                 {% endfor %}
             </div>
             {% endmatch %}

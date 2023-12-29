@@ -92,6 +92,10 @@ Connection: close
             justify-content: center;
             align-items: center;
         }
+
+        {% for (id, style) in calendar_event_styles %}
+        .{{id}} { {{style}} }
+        {% endfor %}
     </style>
 </head>
 
@@ -116,7 +120,7 @@ Connection: close
             <span class="cell">
                 <span>{{day}}</span>
                 {% for event in events %}
-                <span class="event">{{event}}</span>
+                <span class="event {{event.group_id}}">{{event.title}}</span>
                 {% endfor %}
             </span>
             {% when CalendarCell::MonthAndYear with {month, year} %}
