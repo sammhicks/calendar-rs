@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{BufRead, Write},
+    str::FromStr,
 };
 
 use askama::Template;
@@ -45,16 +46,6 @@ fn days_in_month(year: i32, month: Month) -> u32 {
     }
 }
 
-const WEEKDAYS: [Weekday; 7] = [
-    Weekday::Mon,
-    Weekday::Tue,
-    Weekday::Wed,
-    Weekday::Thu,
-    Weekday::Fri,
-    Weekday::Sat,
-    Weekday::Sun,
-];
-
 trait WeekdayExt {
     fn name(self) -> &'static str;
 
@@ -79,9 +70,24 @@ impl WeekdayExt for Weekday {
     }
 }
 
+fn find_date(
+    year: i32,
+    month: Month,
+    day: u32,
+    target: Weekday,
+    direction: i64,
+) -> chrono::NaiveDate {
+    let mut date = chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), day).unwrap();
+
+    while date.weekday() != target {
+        date += chrono::Duration::days(direction);
+    }
+
+    date
+}
+
 #[derive(Debug)]
 struct Event {
-    year: i32,
     month: Month,
     day: u32,
     title: String,
@@ -89,92 +95,109 @@ struct Event {
 
 impl Event {
     fn new(date: chrono::NaiveDate, title: String) -> color_eyre::eyre::Result<Self> {
-        let year = date.year_ce().1.try_into().wrap_err("Failed to get year")?;
         let month = Month::try_from((date.month0() + 1) as u8).wrap_err("Failed to get month")?;
         let day = date.day0() + 1;
 
-        Ok(Self {
-            year,
-            month,
-            day,
-            title,
+        Ok(Self { month, day, title })
+    }
+
+    fn nth_weekday(
+        year: i32,
+        month: Month,
+        weekday: Weekday,
+        index: i16,
+        title: &str,
+    ) -> Option<Self> {
+        match index.cmp(&0) {
+            std::cmp::Ordering::Equal => {
+                println!("nth weekday cannot be 0");
+                None
+            }
+            std::cmp::Ordering::Greater => {
+                let first = find_date(year, month, 1, weekday, 1);
+
+                let event_day = first + chrono::Duration::weeks((index - 1).into());
+
+                (event_day.with_day0(first.day0()) == Some(first))
+                    .then(|| Self::new(event_day, title.into()).ok())
+                    .flatten()
+            }
+            std::cmp::Ordering::Less => {
+                let last = find_date(year, month, days_in_month(year, month), weekday, -1);
+
+                let event_day = last + chrono::Duration::weeks((index + 1).into());
+
+                (event_day.with_day0(last.day0()) == Some(last))
+                    .then(|| Self::new(event_day, title.into()).ok())
+                    .flatten()
+            }
+        }
+        .or_else(|| {
+            println!("{index}'th {weekday} does not exist");
+
+            None
         })
     }
 
-    fn day_is_within_month(&self) -> bool {
-        (1..=days_in_month(self.year, self.month)).contains(&self.day)
-    }
-
     fn parse(input: &str, year: i32) -> color_eyre::eyre::Result<Vec<Self>> {
-        let Some((day, month_or_weekday, title)) = Some(input).and_then(|input| {
+        let Some((index, category, title)) = Some(input).and_then(|input| {
             let space_or_tab = |c: char| c == ' ' || c == '\t';
 
-            let (day, input) = input.trim().split_once(space_or_tab)?;
+            let (index, input) = input.trim().split_once(space_or_tab)?;
             let (month_or_weekday, title) = input.trim().split_once(space_or_tab)?;
 
-            Some((day.trim(), month_or_weekday.trim(), title.trim()))
+            Some((index.trim(), month_or_weekday.trim(), title.trim()))
         }) else {
             color_eyre::eyre::bail!("Invalid event: {input}")
         };
 
-        let day = day.parse().wrap_err_with(|| format!("Invalid day {day}"))?;
+        let index = index
+            .parse::<i16>()
+            .wrap_err_with(|| format!("Invalid index {index}"))?;
 
-        for month in MONTHS {
-            let month_name = month.name();
+        Ok(if category.eq_ignore_ascii_case("easter") {
+            let easter = computus::gregorian(year)
+                .map_err(|err| color_eyre::eyre::eyre!("Failed to calculate easter: {err}"))
+                .map(|computus::Date { year, month, day }| {
+                    chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
+                })?;
 
-            if month_name.eq_ignore_ascii_case(month_or_weekday)
-                || month_name
-                    .get(0..3)
-                    .is_some_and(|month_name| month_name.eq_ignore_ascii_case(month_or_weekday))
-            {
-                return Ok([Self {
-                    year,
-                    month,
-                    day,
-                    title: title.into(),
-                }]
+            vec![Self::new(
+                easter + chrono::Duration::days(index.into()),
+                title.into(),
+            )?]
+        } else if let Some((weekday, month)) =
+            category.split_once('/').and_then(|(weekday, month)| {
+                Some((
+                    Weekday::from_str(weekday).ok()?,
+                    Month::from_str(month).ok()?,
+                ))
+            })
+        {
+            Event::nth_weekday(year, month, weekday, index, title)
                 .into_iter()
-                .filter(Event::day_is_within_month)
-                .collect());
-            }
-        }
-
-        for weekday in WEEKDAYS {
-            if weekday.name().eq_ignore_ascii_case(month_or_weekday)
-                || weekday
-                    .name()
-                    .get(0..3)
-                    .is_some_and(|month_name| month_name.eq_ignore_ascii_case(month_or_weekday))
-            {
-                return Ok(MONTHS
-                    .iter()
-                    .filter_map(|&month| {
-                        let day = chrono::NaiveDate::from_weekday_of_month_opt(
-                            year,
-                            month.number_from_month(),
-                            weekday,
-                            day as u8,
-                        )
-                        .or_else(|| {
-                            println!("{day}'th {weekday} of {} is out of range", month.name());
-                            None
-                        })?
-                        .day0()
-                            + 1;
-
-                        Some(Self {
-                            year,
-                            month,
-                            day,
-                            title: title.into(),
-                        })
+                .collect()
+        } else if let Ok(month) = Month::from_str(category) {
+            vec![Self::new(
+                index
+                    .try_into()
+                    .ok()
+                    .and_then(|day| {
+                        chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), day)
                     })
-                    .filter(Event::day_is_within_month)
-                    .collect());
-            }
-        }
-
-        color_eyre::eyre::bail!("Invalid event: {input}")
+                    .ok_or_else(|| {
+                        color_eyre::eyre::eyre!("Invalid date {year}/{}/{index}", month.name())
+                    })?,
+                title.into(),
+            )?]
+        } else if let Ok(weekday) = Weekday::from_str(category) {
+            MONTHS
+                .iter()
+                .filter_map(|&month| Self::nth_weekday(year, month, weekday, index, title))
+                .collect()
+        } else {
+            color_eyre::eyre::bail!("Invalid event: {input}")
+        })
     }
 }
 
@@ -255,22 +278,6 @@ struct Args {
     #[clap(subcommand)]
     command: Option<Command>,
 }
-
-// fn find_date(
-//     year: i32,
-//     month: Month,
-//     day: u32,
-//     target: Weekday,
-//     direction: i64,
-// ) -> chrono::NaiveDate {
-//     let mut date = chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), day).unwrap();
-
-//     while date.weekday() != target {
-//         date += chrono::Duration::days(direction);
-//     }
-
-//     date
-// }
 
 fn main() -> color_eyre::eyre::Result<()> {
     let Args {
@@ -358,47 +365,6 @@ fn main() -> color_eyre::eyre::Result<()> {
         }
     }
 
-    let easter = computus::gregorian(year)
-        .map_err(|err| color_eyre::eyre::eyre!("Failed to calculate easter: {err}"))
-        .map(|computus::Date { year, month, day }| {
-            chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
-        })?;
-
-    event_groups.push(EventGroup {
-        title: "Easter Days".into(),
-        events: [
-            ("Ash Wednesday", -46),
-            ("Palm Sunday", -7),
-            ("Good Friday", -2),
-            ("Easter", 0),
-            ("Easter Monday", 1),
-            ("Ascension (HO)", 39),
-            ("Pentecost", 49),
-            ("Pentecost Monday", 50),
-            ("Fête-Dieu", 60),
-            ("Corpus Christi", 63),
-        ]
-        .into_iter()
-        .map(|(title, easter_offset)| {
-            Event::new(easter + chrono::Duration::days(easter_offset), title.into())
-        })
-        .collect::<Result<_, _>>()?,
-    });
-
-    // event_groups.push(EventGroup {
-    //     title: "British Summer Time".into(),
-    //     events: vec![
-    //         Event::new(
-    //             find_date(year, Month::March, 31, Weekday::Sun, -1),
-    //             "BST Begins".into(),
-    //         )?,
-    //         Event::new(
-    //             find_date(year, Month::October, 31, Weekday::Sun, -1),
-    //             "BST Ends".into(),
-    //         )?,
-    //     ],
-    // });
-
     let output = match command {
         Some(Command::ListEventGroups) => {
             for EventGroup { title, .. } in event_groups {
@@ -465,13 +431,7 @@ fn main() -> color_eyre::eyre::Result<()> {
             continue;
         }
 
-        for Event {
-            year: _,
-            month,
-            day,
-            title,
-        } in events
-        {
+        for Event { month, day, title } in events {
             calendar_events
                 .entry(MonthAndDay { month, day })
                 .or_insert_with(Vec::new)
