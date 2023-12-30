@@ -1,0 +1,108 @@
+{{- crate::HTTP_RESPONSE_HEADER -}}
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monthly Calendar</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+
+            font-family: sans-serif;
+            font-size: calc(100vh / 80);
+        }
+
+        section {
+            width: 100vw;
+            height: 100vh;
+            page-break-after: always;
+
+            display: grid;
+            grid-auto-flow: column;
+            grid-template-rows: auto repeat(37, 1fr);
+            grid-template-columns: auto;
+            grid-auto-columns: 1fr;
+
+        }
+
+        section>* {
+            padding-left: 0.5ch;
+        }
+
+        header {
+            font-family: monospace;
+        }
+
+        header.year {
+            padding: 0.5ch;
+        }
+
+        header.month {
+            font-weight: bold;
+        }
+
+        .cell {
+            border-width: 1pt;
+            border-color: black;
+
+            border-right-style: solid;
+            border-bottom-style: solid;
+
+            display: flex;
+            flex-flow: row nowrap;
+            align-items: center;
+        }
+
+        .cell span {
+            margin-right: 1ch;
+        }
+
+        .top {
+            border-top-style: solid;
+        }
+
+        .left {
+            border-left-style: solid;
+        }
+
+        .shadedBackground {
+            background-color: rgb(255, 255, 153);
+        }
+    </style>
+    {{calendar_event_styles|safe}}
+</head>
+
+<body class="{{self.body_class()}}">
+    {% for page in pages %}
+    <section>
+        <header class="cell top left year">{{year}}</header>
+        {% for weekday in weekday_titles %}
+        <span class="cell left">{{weekday}}</span>
+        {% endfor %}
+
+        {% for month in page.months %}
+        <header class="cell top month">{{month.month.name()}}</header>
+        {% for day in month.days %}
+        {% let background_class = day.background_class() %}
+        {% match day %}
+        {% when YearlyCalendarDay::Empty with {weekday} %}
+        <span class="cell {{background_class}}"></span>
+        {% when YearlyCalendarDay::Day with {weekday, day, events} %}
+        <span class="cell {{background_class}}">
+            <span>{{day}}</span>
+            {% for event in events %}
+            <span class="event {{event.group_id}}">{{event.title}}</span>
+            {% endfor %}
+        </span>
+        {% endmatch %}
+        {% endfor %}
+
+        {% endfor %}
+    </section>
+    {% endfor %}
+</body>
+
+</html>

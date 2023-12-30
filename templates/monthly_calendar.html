@@ -1,14 +1,11 @@
-HTTP/1.0 200 OK
-Content-Type: text/html; charset=UTF-8
-Connection: close
-
+{{- crate::HTTP_RESPONSE_HEADER -}}
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Calendar</title>
+    <title>Monthly Calendar</title>
     <style>
         body {
             margin: 0;
@@ -92,11 +89,8 @@ Connection: close
             justify-content: center;
             align-items: center;
         }
-
-        {% for (id, style) in calendar_event_styles %}
-        .{{id}} { {{style}} }
-        {% endfor %}
     </style>
+    {{calendar_event_styles|safe}}
 </head>
 
 <body>

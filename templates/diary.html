@@ -1,7 +1,4 @@
-HTTP/1.0 200 OK
-Content-Type: text/html; charset=UTF-8
-Connection: close
-
+{{- crate::HTTP_RESPONSE_HEADER -}}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -14,6 +11,7 @@ Connection: close
             margin: 0;
             padding: 0;
 
+            font-family: sans-serif;
             font-size: calc(100vh / 80);
         }
 
@@ -59,11 +57,8 @@ Connection: close
         section>div>span {
             margin-right: 1ch;
         }
-
-        {% for (id, style) in calendar_event_styles %}
-        .{{id}} { {{style}} }
-        {% endfor %}
     </style>
+    {{calendar_event_styles|safe}}
 </head>
 
 <body>
@@ -78,7 +73,7 @@ Connection: close
             <div></div>
             {% when DiaryCell::Day with { weekday, day, events } %}
             <div {% if weekday.is_weekend() %}class="shadedBackground" {% endif %}>
-                <span class="date">{{weekday.name()[0..3]}} {{"{:02}"|format(day)}}</span>
+                <span class="date">{{weekday}} {{day}}</span>
                 {% for event in events %}
                 <span class="{{event.group_id}}">{{event.title}}</span>
                 {% endfor %}

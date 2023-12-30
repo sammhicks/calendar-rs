@@ -10,6 +10,8 @@ use chrono::{Datelike, Month, Weekday};
 use color_eyre::eyre::Context;
 use itertools::Itertools;
 
+const HTTP_RESPONSE_HEADER: &str = include_str!("response.http");
+
 const MONTHS: [Month; 12] = [
     Month::January,
     Month::February,
@@ -69,6 +71,10 @@ impl WeekdayExt for Weekday {
     fn is_weekend(self) -> bool {
         matches!(self, Self::Sat | Self::Sun)
     }
+}
+
+fn weekdays(starting: Weekday) -> impl Iterator<Item = Weekday> {
+    std::iter::successors(Some(starting), |weekday| Some(weekday.succ()))
 }
 
 fn find_date(
@@ -247,10 +253,22 @@ struct EventWithGroupId {
     group_id: GroupId,
 }
 
+struct EventDay {
+    day: u32,
+}
+
+impl fmt::Display for EventDay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { day } = self;
+
+        write!(f, "{day:02}")
+    }
+}
+
 enum CalendarCell {
     Empty,
     Day {
-        day: u32,
+        day: EventDay,
         events: Vec<EventWithGroupId>,
     },
     MonthAndYear {
@@ -259,18 +277,106 @@ enum CalendarCell {
     },
 }
 
+struct CalendarEventStyles(Vec<(GroupId, String)>);
+
+impl fmt::Display for CalendarEventStyles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<style>")?;
+
+        for (id, style) in &self.0 {
+            write!(f, ".{id} {{ {style} }}")?;
+        }
+
+        write!(f, "</style>")
+    }
+}
+
 #[derive(Template)]
-#[template(path = "calendar.http", escape = "html")]
-struct Calendar {
-    calendar_event_styles: Vec<(GroupId, String)>,
+#[template(path = "monthly_calendar.html")]
+struct MonthlyCalendar {
+    calendar_event_styles: CalendarEventStyles,
     events: Vec<Vec<CalendarCell>>,
+}
+
+enum YearlyCalendarDay<W> {
+    Empty {
+        weekday: W,
+    },
+    Day {
+        weekday: W,
+        day: EventDay,
+        events: Vec<EventWithGroupId>,
+    },
+}
+
+impl YearlyCalendarDay<()> {
+    fn with_weekday(self, weekday: Weekday) -> YearlyCalendarDay<Weekday> {
+        match self {
+            Self::Empty { weekday: () } => YearlyCalendarDay::Empty { weekday },
+            Self::Day {
+                weekday: (),
+                day,
+                events,
+            } => YearlyCalendarDay::Day {
+                weekday,
+                day,
+                events,
+            },
+        }
+    }
+}
+
+impl YearlyCalendarDay<Weekday> {
+    fn background_class(&self) -> &'static str {
+        let is_weekend = match self {
+            YearlyCalendarDay::Empty { weekday } | YearlyCalendarDay::Day { weekday, .. } => {
+                weekday.is_weekend()
+            }
+        };
+
+        if is_weekend {
+            "shadedBackground"
+        } else {
+            ""
+        }
+    }
+}
+
+struct YearlyCalendarMonth {
+    month: Month,
+    days: Vec<YearlyCalendarDay<Weekday>>,
+}
+
+struct YearlyCalendarPage {
+    months: Vec<YearlyCalendarMonth>,
+}
+
+#[derive(Template)]
+#[template(path = "yearly_calendar.html")]
+struct YearlyCalendar {
+    calendar_event_styles: CalendarEventStyles,
+    year: i32,
+    weekday_titles: Vec<Weekday>,
+    pages: Vec<YearlyCalendarPage>,
+}
+
+impl YearlyCalendar {
+    const ROWS_COUNT: usize = 37;
+
+    fn body_class(&self) -> &'static str {
+        if self.pages.len() == 1 {
+            "fullyear"
+        } else {
+            "halfyear"
+        }
+    }
 }
 
 enum DiaryCell {
     Empty,
     Day {
         weekday: Weekday,
-        day: u32,
+        day: EventDay,
         events: Vec<EventWithGroupId>,
     },
 }
@@ -281,9 +387,9 @@ struct DiaryPage {
 }
 
 #[derive(Template)]
-#[template(path = "diary.http", escape = "html")]
+#[template(path = "diary.html")]
 struct Diary {
-    calendar_event_styles: Vec<(GroupId, String)>,
+    calendar_event_styles: CalendarEventStyles,
     pages: Vec<Vec<DiaryPage>>,
 }
 
@@ -294,17 +400,31 @@ struct MonthAndDay {
 }
 
 #[derive(clap::Subcommand)]
+enum CalendarLength {
+    /// Each page is a month long
+    Month,
+    /// Each page is a year long
+    Year,
+    /// Each page is half a year long
+    HalfYear,
+}
+
+#[derive(clap::Subcommand)]
 enum Command {
     /// List all event groups and exit
     ListEventGroups,
     /// Generate a Calendar
-    Calendar,
+    Calendar {
+        #[clap(subcommand)]
+        length: CalendarLength,
+    },
     /// Generate a Diary
     Diary,
 }
 
 enum Output {
-    Calendar,
+    MonthlyCalendar,
+    YearlyCalendar { split_in_two: bool },
     Diary,
 }
 
@@ -316,6 +436,9 @@ struct Args {
     /// The year to create a calendar for
     #[clap(short, long)]
     year: Option<i32>,
+    /// Do not include any events
+    #[clap(short = 'n', long)]
+    include_no_events: bool,
     /// Include events from all event groups
     #[clap(short = 'a', long)]
     include_all_events: bool,
@@ -331,6 +454,7 @@ fn main() -> color_eyre::eyre::Result<()> {
     let Args {
         calendar_file,
         year,
+        include_no_events,
         include_all_events,
         include_events,
         command,
@@ -433,7 +557,17 @@ fn main() -> color_eyre::eyre::Result<()> {
 
             return Ok(());
         }
-        Some(Command::Calendar) => Output::Calendar,
+        Some(Command::Calendar {
+            length: CalendarLength::Month,
+        }) => Output::MonthlyCalendar,
+        Some(Command::Calendar {
+            length: CalendarLength::Year,
+        }) => Output::YearlyCalendar {
+            split_in_two: false,
+        },
+        Some(Command::Calendar {
+            length: CalendarLength::HalfYear,
+        }) => Output::YearlyCalendar { split_in_two: true },
         Some(Command::Diary) => Output::Diary,
         None => loop {
             print!("What would you like to generate?");
@@ -446,7 +580,7 @@ fn main() -> color_eyre::eyre::Result<()> {
                 .unwrap_or_default()
                 .as_str()
             {
-                "calendar" => Output::Calendar,
+                "calendar" => Output::MonthlyCalendar,
                 "diary" => Output::Diary,
                 _ => {
                     println!(r#"Please enter "calendar" or "diary""#);
@@ -459,65 +593,69 @@ fn main() -> color_eyre::eyre::Result<()> {
     let mut calendar_events = HashMap::new();
     let mut calendar_event_styles = Vec::new();
 
-    for EventGroup {
-        id: group_id,
-        title,
-        style,
-        events,
-    } in event_groups
-    {
-        let include_group = include_all_events
-            || match &include_events {
-                Some(include_events) => include_events
-                    .iter()
-                    .any(|include_events| include_events.eq_ignore_ascii_case(&title)),
-                None => loop {
-                    print!("Include {title:?} (y/n)?: ");
-                    stdout.flush().unwrap();
-
-                    break match stdin
-                        .next()
-                        .transpose()
-                        .unwrap()
-                        .unwrap_or_default()
-                        .trim()
-                        .to_lowercase()
-                        .as_str()
-                    {
-                        "" | "y" | "yes" => true,
-                        "n" | "no" => false,
-                        _ => {
-                            println!(r#"Please enter "y" or "n""#);
-                            continue;
-                        }
-                    };
-                },
-            };
-
-        if !include_group {
-            continue;
-        }
-
-        if let Some(style) = style {
-            calendar_event_styles.push((group_id, style));
-        }
-
-        for Event {
-            month,
-            day,
+    if !include_no_events {
+        for EventGroup {
+            id: group_id,
             title,
-            group_id,
-        } in events
+            style,
+            events,
+        } in event_groups
         {
-            calendar_events
-                .entry(MonthAndDay { month, day })
-                .or_insert_with(Vec::new)
-                .push(EventWithGroupId { title, group_id });
+            let include_group = include_all_events
+                || match &include_events {
+                    Some(include_events) => include_events
+                        .iter()
+                        .any(|include_events| include_events.eq_ignore_ascii_case(&title)),
+                    None => loop {
+                        print!("Include {title:?} (y/n)?: ");
+                        stdout.flush().unwrap();
+
+                        break match stdin
+                            .next()
+                            .transpose()
+                            .unwrap()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_lowercase()
+                            .as_str()
+                        {
+                            "" | "y" | "yes" => true,
+                            "n" | "no" => false,
+                            _ => {
+                                println!(r#"Please enter "y" or "n""#);
+                                continue;
+                            }
+                        };
+                    },
+                };
+
+            if !include_group {
+                continue;
+            }
+
+            if let Some(style) = style {
+                calendar_event_styles.push((group_id, style));
+            }
+
+            for Event {
+                month,
+                day,
+                title,
+                group_id,
+            } in events
+            {
+                calendar_events
+                    .entry(MonthAndDay { month, day })
+                    .or_insert_with(Vec::new)
+                    .push(EventWithGroupId { title, group_id });
+            }
         }
     }
 
+    let calendar_event_styles = CalendarEventStyles(calendar_event_styles);
+
     let output = match output {
-        Output::Calendar => Calendar {
+        Output::MonthlyCalendar => MonthlyCalendar {
             calendar_event_styles,
             events: MONTHS
                 .iter()
@@ -532,7 +670,7 @@ fn main() -> color_eyre::eyre::Result<()> {
                         .take(days_before_start)
                         .chain((1..=days_in_month(year, month)).map(|day| {
                             CalendarCell::Day {
-                                day,
+                                day: EventDay { day },
                                 events: calendar_events
                                     .remove(&MonthAndDay { month, day })
                                     .unwrap_or_default(),
@@ -546,6 +684,60 @@ fn main() -> color_eyre::eyre::Result<()> {
                 .collect(),
         }
         .render(),
+        Output::YearlyCalendar { split_in_two } => {
+            let mut months = MONTHS
+                .iter()
+                .map(|&month| {
+                    let days_before_start =
+                        chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), 1)
+                            .unwrap()
+                            .weekday()
+                            .num_days_from_monday() as usize;
+
+                    YearlyCalendarMonth {
+                        month,
+                        days: std::iter::repeat_with(|| YearlyCalendarDay::Empty { weekday: () })
+                            .take(days_before_start)
+                            .chain((1..=days_in_month(year, month)).map(|day| {
+                                YearlyCalendarDay::Day {
+                                    weekday: (),
+                                    day: EventDay { day },
+                                    events: calendar_events
+                                        .remove(&MonthAndDay { month, day })
+                                        .unwrap_or_default(),
+                                }
+                            }))
+                            .chain(std::iter::repeat_with(|| YearlyCalendarDay::Empty {
+                                weekday: (),
+                            }))
+                            .take(YearlyCalendar::ROWS_COUNT)
+                            .zip(weekdays(Weekday::Mon))
+                            .map(|(day, weekday)| day.with_weekday(weekday))
+                            .collect(),
+                    }
+                })
+                .collect_vec();
+
+            YearlyCalendar {
+                calendar_event_styles,
+                year,
+                weekday_titles: weekdays(Weekday::Mon)
+                    .take(YearlyCalendar::ROWS_COUNT)
+                    .collect(),
+                pages: if split_in_two {
+                    let latter_months = months.split_off(6);
+                    vec![
+                        YearlyCalendarPage { months },
+                        YearlyCalendarPage {
+                            months: latter_months,
+                        },
+                    ]
+                } else {
+                    vec![YearlyCalendarPage { months }]
+                },
+            }
+            .render()
+        }
         Output::Diary => Diary {
             calendar_event_styles,
             pages: MONTHS
@@ -560,7 +752,7 @@ fn main() -> color_eyre::eyre::Result<()> {
                             )
                             .unwrap()
                             .weekday(),
-                            day,
+                            day: EventDay { day },
                             events: calendar_events
                                 .remove(&MonthAndDay { month, day })
                                 .unwrap_or_default(),
