@@ -5,9 +5,15 @@ use std::{
     str::FromStr,
 };
 
+use anyhow::Context;
 use askama::Template;
 use chrono::{Datelike, Month, Weekday};
-use color_eyre::eyre::Context;
+use druid::{
+    im::Vector,
+    text::ArcStr,
+    widget::{prelude::*, Button, Checkbox, Flex, Label, List, RadioGroup},
+    Data, Lens, Widget, WidgetExt,
+};
 use itertools::Itertools;
 
 const HTTP_RESPONSE_HEADER: &str = include_str!("response.http");
@@ -52,6 +58,7 @@ fn days_in_month(year: i32, month: Month) -> u32 {
 trait WeekdayExt {
     fn name(self) -> &'static str;
 
+    #[allow(clippy::wrong_self_convention)]
     fn is_weekend(self) -> bool;
 }
 
@@ -93,7 +100,7 @@ fn find_date(
     date
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Data)]
 enum GroupId {
     #[default]
     NoGroup,
@@ -113,17 +120,13 @@ impl fmt::Display for GroupId {
 struct Event {
     month: Month,
     day: u32,
-    title: String,
+    title: ArcStr,
     group_id: GroupId,
 }
 
 impl Event {
-    fn new(
-        date: chrono::NaiveDate,
-        title: String,
-        group_id: GroupId,
-    ) -> color_eyre::eyre::Result<Self> {
-        let month = Month::try_from((date.month0() + 1) as u8).wrap_err("Failed to get month")?;
+    fn new(date: chrono::NaiveDate, title: ArcStr, group_id: GroupId) -> anyhow::Result<Self> {
+        let month = Month::try_from((date.month0() + 1) as u8).context("Failed to get month")?;
         let day = date.day0() + 1;
 
         Ok(Self {
@@ -138,119 +141,51 @@ impl Event {
         year: i32,
         month: Month,
         weekday: Weekday,
-        index: i16,
+        n: i16,
         title: &str,
         group_id: GroupId,
-    ) -> Option<Self> {
-        match index.cmp(&0) {
-            std::cmp::Ordering::Equal => {
-                println!("nth weekday cannot be 0");
-                None
+    ) -> anyhow::Result<Option<Self>> {
+        Ok(Some(
+            match n.cmp(&0) {
+                std::cmp::Ordering::Equal => {
+                    anyhow::bail!("nth weekday cannot be 0");
+                }
+                std::cmp::Ordering::Greater => {
+                    let first = find_date(year, month, 1, weekday, 1);
+
+                    let event_day = first + chrono::Duration::weeks((n - 1).into());
+
+                    (event_day.with_day0(first.day0()) == Some(first))
+                        .then(|| Self::new(event_day, title.into(), group_id).ok())
+                        .flatten()
+                }
+                std::cmp::Ordering::Less => {
+                    let last = find_date(year, month, days_in_month(year, month), weekday, -1);
+
+                    let event_day = last + chrono::Duration::weeks((n + 1).into());
+
+                    (event_day.with_day0(last.day0()) == Some(last))
+                        .then(|| Self::new(event_day, title.into(), group_id).ok())
+                        .flatten()
+                }
             }
-            std::cmp::Ordering::Greater => {
-                let first = find_date(year, month, 1, weekday, 1);
-
-                let event_day = first + chrono::Duration::weeks((index - 1).into());
-
-                (event_day.with_day0(first.day0()) == Some(first))
-                    .then(|| Self::new(event_day, title.into(), group_id).ok())
-                    .flatten()
-            }
-            std::cmp::Ordering::Less => {
-                let last = find_date(year, month, days_in_month(year, month), weekday, -1);
-
-                let event_day = last + chrono::Duration::weeks((index + 1).into());
-
-                (event_day.with_day0(last.day0()) == Some(last))
-                    .then(|| Self::new(event_day, title.into(), group_id).ok())
-                    .flatten()
-            }
-        }
-        .or_else(|| {
-            println!("{index}'th {weekday} does not exist");
-
-            None
-        })
-    }
-
-    fn parse(input: &str, year: i32, group_id: GroupId) -> color_eyre::eyre::Result<Vec<Self>> {
-        let Some((index, category, title)) = Some(input).and_then(|input| {
-            let space_or_tab = |c: char| c == ' ' || c == '\t';
-
-            let (index, input) = input.trim().split_once(space_or_tab)?;
-            let (month_or_weekday, title) = input.trim().split_once(space_or_tab)?;
-
-            Some((index.trim(), month_or_weekday.trim(), title.trim()))
-        }) else {
-            color_eyre::eyre::bail!("Invalid event: {input}")
-        };
-
-        let index = index
-            .parse::<i16>()
-            .wrap_err_with(|| format!("Invalid index {index}"))?;
-
-        Ok(if category.eq_ignore_ascii_case("easter") {
-            let easter = computus::gregorian(year)
-                .map_err(|err| color_eyre::eyre::eyre!("Failed to calculate easter: {err}"))
-                .map(|computus::Date { year, month, day }| {
-                    chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
-                })?;
-
-            vec![Self::new(
-                easter + chrono::Duration::days(index.into()),
-                title.into(),
-                group_id,
-            )?]
-        } else if let Some((weekday, month)) =
-            category.split_once('/').and_then(|(weekday, month)| {
-                Some((
-                    Weekday::from_str(weekday).ok()?,
-                    Month::from_str(month).ok()?,
-                ))
-            })
-        {
-            Event::nth_weekday(year, month, weekday, index, title, group_id)
-                .into_iter()
-                .collect()
-        } else if let Ok(month) = Month::from_str(category) {
-            vec![Self::new(
-                index
-                    .try_into()
-                    .ok()
-                    .and_then(|day| {
-                        chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), day)
-                    })
-                    .ok_or_else(|| {
-                        color_eyre::eyre::eyre!("Invalid date {year}/{}/{index}", month.name())
-                    })?,
-                title.into(),
-                group_id,
-            )?]
-        } else if let Ok(weekday) = Weekday::from_str(category) {
-            MONTHS
-                .iter()
-                .filter_map(|&month| {
-                    Self::nth_weekday(year, month, weekday, index, title, group_id)
-                })
-                .collect()
-        } else {
-            color_eyre::eyre::bail!("Invalid event: {input}")
-        })
+            .with_context(|| format!("{n}'th {weekday} does not exist"))?,
+        ))
     }
 }
 
-#[derive(Debug)]
-struct EventGroup {
-    id: GroupId,
-    title: String,
-    style: Option<String>,
-    events: Vec<Event>,
-}
-
-#[derive(Default)]
 struct EventWithGroupId {
-    title: String,
+    title: ArcStr,
     group_id: GroupId,
+}
+
+impl Default for EventWithGroupId {
+    fn default() -> Self {
+        Self {
+            title: "".into(),
+            group_id: GroupId::default(),
+        }
+    }
 }
 
 struct EventDay {
@@ -277,7 +212,7 @@ enum CalendarCell {
     },
 }
 
-struct CalendarEventStyles(Vec<(GroupId, String)>);
+struct CalendarEventStyles(Vec<(GroupId, ArcStr)>);
 
 impl fmt::Display for CalendarEventStyles {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -399,304 +334,268 @@ struct MonthAndDay {
     day: u32,
 }
 
-#[derive(clap::Subcommand)]
-enum CalendarLength {
-    /// Each page is a month long
-    Month,
-    /// Each page is a year long
-    Year,
-    /// Each page is half a year long
-    HalfYear,
-}
-
-#[derive(clap::Subcommand)]
-enum Command {
-    /// List all event groups and exit
-    ListEventGroups,
-    /// Generate a Calendar
-    Calendar {
-        #[clap(subcommand)]
-        length: CalendarLength,
-    },
-    /// Generate a Diary
-    Diary,
-}
-
+#[derive(Clone, Data, PartialEq, Eq)]
 enum Output {
     MonthlyCalendar,
     YearlyCalendar { split_in_two: bool },
     Diary,
 }
 
-#[derive(clap::Parser)]
-struct Args {
-    /// The calendar to read events from
-    #[clap(short, long)]
-    calendar_file: Option<std::path::PathBuf>,
-    /// The year to create a calendar for
-    #[clap(short, long)]
-    year: Option<i32>,
-    /// Do not include any events
-    #[clap(short = 'n', long)]
-    include_no_events: bool,
-    /// Include events from all event groups
-    #[clap(short = 'a', long)]
-    include_all_events: bool,
-    /// Include events from the following event group. Can be included multiple times to included events from multiple event groups.
-    #[clap(short = 'e', long, value_name = "EVENT GROUP NAME")]
-    include_events: Option<Vec<String>>,
-    /// List all event groups and exit
-    #[clap(subcommand)]
-    command: Option<Command>,
+#[derive(Clone, Copy)]
+enum EventDescriptionData {
+    FixedDate {
+        month: Month,
+        day: u32,
+    },
+    NthWeekdayOfMonth {
+        n: i16,
+        weekday: Weekday,
+        // None Means Every Month
+        month: Option<Month>,
+    },
+    DaysAfterEaster {
+        day_offset: i16,
+    },
 }
 
-fn main() -> color_eyre::eyre::Result<()> {
-    let Args {
-        calendar_file,
-        year,
-        include_no_events,
-        include_all_events,
-        include_events,
-        command,
-    } = clap::Parser::parse();
+#[derive(Clone)]
+struct EventDescription {
+    title: ArcStr,
+    data: EventDescriptionData,
+    group_id: GroupId,
+}
 
-    color_eyre::install()?;
+impl EventDescription {
+    fn parse(input: &str, group_id: GroupId) -> anyhow::Result<Self> {
+        let Some((index, category, title)) = Some(input).and_then(|input| {
+            let space_or_tab = |c: char| c == ' ' || c == '\t';
 
-    let mut stdin = std::io::stdin().lines();
-    let mut stdout = std::io::stdout();
+            let (index, input) = input.trim().split_once(space_or_tab)?;
+            let (month_or_weekday, title) = input.trim().split_once(space_or_tab)?;
 
-    let calendar_file = match calendar_file {
-        Some(calendar_file) => calendar_file,
-        None => {
-            print!("Enter Calendar File: ");
-            stdout.flush().unwrap();
+            Some((index.trim(), month_or_weekday.trim(), title.trim()))
+        }) else {
+            anyhow::bail!("Invalid event: {input}")
+        };
 
-            let Some(next_line) = stdin.next() else {
-                return Ok(());
-            };
+        let index = index
+            .parse::<i16>()
+            .with_context(|| format!("Invalid index {index}"))?;
 
-            next_line
-                .wrap_err("Failed to read calendar file path")?
-                .into()
-        }
-    };
-
-    let calendar_text = std::fs::read_to_string(&calendar_file)
-        .wrap_err_with(|| format!("Failed to read {}", calendar_file.display()))?;
-
-    let year = match year {
-        Some(year) => year,
-        None => loop {
-            print!("Enter year: ");
-            stdout.flush().unwrap();
-
-            let Some(next_line) = stdin.next() else {
-                return Ok(());
-            };
-
-            let year = next_line.wrap_err("Failed to read year")?;
-
-            break match year.parse() {
-                Ok(year) => year,
-                Err(err) => {
-                    println!("Invalid year ({year:?}): {err}");
-                    continue;
-                }
-            };
-        },
-    };
-
-    let mut event_groups = Vec::new();
-
-    for (line_num, line) in calendar_text.lines().enumerate() {
-        let line_num = line_num + 1;
-
-        let line = line.trim();
-
-        if line.is_empty() {
-            continue;
-        }
-
-        if let Some(line) = line.strip_prefix('[') {
-            let Some(title_and_style) = line.strip_suffix(']') else {
-                color_eyre::eyre::bail!(
-                    "Error on line {line_num}: Event Group titles must end with a ']'"
-                );
-            };
-
-            let (title, style) = title_and_style
-                .split_once(':')
-                .map(|(title, style)| (title.trim(), Some(style.into())))
-                .unwrap_or((title_and_style, None));
-            let id = GroupId::Group(event_groups.len());
-
-            event_groups.push(EventGroup {
-                id,
-                title: title.trim().into(),
-                style,
-                events: Vec::new(),
-            });
-        } else {
-            let Some(current_group) = event_groups.last_mut() else {
-                color_eyre::eyre::bail!("Calendar must start with an event group");
-            };
-
-            let group_id = current_group.id;
-
-            current_group
-                .events
-                .extend(Event::parse(line, year, group_id)?)
-        }
-    }
-
-    let output = match command {
-        Some(Command::ListEventGroups) => {
-            for EventGroup { title, .. } in event_groups {
-                println!("{title}");
-            }
-
-            return Ok(());
-        }
-        Some(Command::Calendar {
-            length: CalendarLength::Month,
-        }) => Output::MonthlyCalendar,
-        Some(Command::Calendar {
-            length: CalendarLength::Year,
-        }) => Output::YearlyCalendar {
-            split_in_two: false,
-        },
-        Some(Command::Calendar {
-            length: CalendarLength::HalfYear,
-        }) => Output::YearlyCalendar { split_in_two: true },
-        Some(Command::Diary) => Output::Diary,
-        None => loop {
-            print!("What would you like to generate?");
-            stdout.flush().unwrap();
-
-            break match stdin
-                .next()
-                .transpose()
-                .unwrap()
-                .unwrap_or_default()
-                .as_str()
+        Ok(Self {
+            title: title.into(),
+            group_id,
+            data: if category.eq_ignore_ascii_case("easter") {
+                EventDescriptionData::DaysAfterEaster { day_offset: index }
+            } else if let Some((weekday, month)) =
+                category.split_once('/').and_then(|(weekday, month)| {
+                    Some((
+                        Weekday::from_str(weekday).ok()?,
+                        Month::from_str(month).ok()?,
+                    ))
+                })
             {
-                "calendar" => Output::MonthlyCalendar,
-                "diary" => Output::Diary,
-                _ => {
-                    println!(r#"Please enter "calendar" or "diary""#);
-                    continue;
+                EventDescriptionData::NthWeekdayOfMonth {
+                    n: index,
+                    weekday,
+                    month: Some(month),
                 }
-            };
-        },
-    };
+            } else if let Ok(month) = Month::from_str(category) {
+                EventDescriptionData::FixedDate {
+                    month,
+                    day: index
+                        .try_into()
+                        .map_err(|_| anyhow::anyhow!("Invalid date {}/{index}", month.name()))?,
+                }
+            } else if let Ok(weekday) = Weekday::from_str(category) {
+                EventDescriptionData::NthWeekdayOfMonth {
+                    n: index,
+                    weekday,
+                    month: None,
+                }
+            } else {
+                anyhow::bail!("Invalid event: {input}")
+            },
+        })
+    }
+}
 
-    let mut calendar_events = HashMap::new();
-    let mut calendar_event_styles = Vec::new();
+#[derive(Clone, Data, Lens)]
+struct EventGroupDescription {
+    #[data(ignore)]
+    id: GroupId,
+    #[data(ignore)]
+    title: ArcStr,
+    #[data(ignore)]
+    style: Option<ArcStr>,
+    #[data(ignore)]
+    events: Vector<EventDescription>,
+    is_selected: bool,
+}
 
-    if !include_no_events {
-        for EventGroup {
-            id: group_id,
-            title,
-            style,
+#[derive(Clone)]
+struct ErrorMessage(ArcStr);
+
+impl ErrorMessage {
+    fn new(err: anyhow::Error) -> Self {
+        Self(format!("{err:?}").into())
+    }
+}
+
+impl Data for ErrorMessage {
+    fn same(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl druid::piet::TextStorage for ErrorMessage {
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl druid::text::TextStorage for ErrorMessage {}
+
+#[derive(Clone, Data, Lens)]
+struct AppState {
+    error_message: Option<ErrorMessage>,
+    year: i32,
+    output: Output,
+    event_group_descriptions: Vector<EventGroupDescription>,
+}
+
+impl AppState {
+    fn show_calendar(&self, events: druid::ExtEventSink) -> anyhow::Result<()> {
+        let year = self.year;
+
+        let mut calendar_events = HashMap::new();
+
+        for EventGroupDescription {
             events,
-        } in event_groups
+            is_selected,
+            ..
+        } in &self.event_group_descriptions
         {
-            let include_group = include_all_events
-                || match &include_events {
-                    Some(include_events) => include_events
-                        .iter()
-                        .any(|include_events| include_events.eq_ignore_ascii_case(&title)),
-                    None => loop {
-                        print!("Include {title:?} (y/n)?: ");
-                        stdout.flush().unwrap();
-
-                        break match stdin
-                            .next()
-                            .transpose()
-                            .unwrap()
-                            .unwrap_or_default()
-                            .trim()
-                            .to_lowercase()
-                            .as_str()
-                        {
-                            "" | "y" | "yes" => true,
-                            "n" | "no" => false,
-                            _ => {
-                                println!(r#"Please enter "y" or "n""#);
-                                continue;
-                            }
-                        };
-                    },
-                };
-
-            if !include_group {
+            if !is_selected {
                 continue;
             }
 
-            if let Some(style) = style {
-                calendar_event_styles.push((group_id, style));
-            }
-
-            for Event {
-                month,
-                day,
-                title,
+            for &EventDescription {
+                ref title,
+                data,
                 group_id,
             } in events
             {
-                calendar_events
-                    .entry(MonthAndDay { month, day })
-                    .or_insert_with(Vec::new)
-                    .push(EventWithGroupId { title, group_id });
+                let events = match data {
+                    EventDescriptionData::FixedDate { month, day } => vec![Event::new(
+                        chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), day)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Invalid date {year}/{}/{day}", month.name())
+                            })?,
+                        title.clone(),
+                        group_id,
+                    )?],
+
+                    EventDescriptionData::NthWeekdayOfMonth { n, weekday, month } => month
+                        .as_ref()
+                        .map_or(&MONTHS[..], std::slice::from_ref)
+                        .iter()
+                        .filter_map(|&month| {
+                            Event::nth_weekday(year, month, weekday, n, title, group_id).transpose()
+                        })
+                        .collect::<Result<_, _>>()?,
+                    EventDescriptionData::DaysAfterEaster { day_offset } => {
+                        let easter = computus::gregorian(year)
+                            .map_err(|err| anyhow::anyhow!("Failed to calculate Easter: {err}"))
+                            .map(|computus::Date { year, month, day }| {
+                                chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
+                            })?;
+
+                        vec![Event::new(
+                            easter + chrono::Duration::days(day_offset.into()),
+                            title.clone(),
+                            group_id,
+                        )?]
+                    }
+                };
+
+                for Event {
+                    month,
+                    day,
+                    title,
+                    group_id,
+                } in events
+                {
+                    calendar_events
+                        .entry(MonthAndDay { month, day })
+                        .or_insert_with(Vec::new)
+                        .push(EventWithGroupId { title, group_id });
+                }
             }
         }
-    }
 
-    let calendar_event_styles = CalendarEventStyles(calendar_event_styles);
-
-    let output = match output {
-        Output::MonthlyCalendar => MonthlyCalendar {
-            calendar_event_styles,
-            events: MONTHS
+        let calendar_event_styles = CalendarEventStyles(
+            self.event_group_descriptions
                 .iter()
-                .map(|&month| {
-                    let days_before_start =
-                        chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), 1)
-                            .unwrap()
-                            .weekday()
-                            .num_days_from_monday() as usize;
-
-                    std::iter::repeat_with(|| CalendarCell::Empty)
-                        .take(days_before_start)
-                        .chain((1..=days_in_month(year, month)).map(|day| {
-                            CalendarCell::Day {
-                                day: EventDay { day },
-                                events: calendar_events
-                                    .remove(&MonthAndDay { month, day })
-                                    .unwrap_or_default(),
-                            }
-                        }))
-                        .chain(std::iter::repeat_with(|| CalendarCell::Empty))
-                        .take(33)
-                        .chain(std::iter::once(CalendarCell::MonthAndYear { month, year }))
-                        .collect()
+                .filter_map(|event_group_description| {
+                    event_group_description
+                        .is_selected
+                        .then(|| {
+                            Some((
+                                event_group_description.id,
+                                event_group_description.style.clone()?,
+                            ))
+                        })
+                        .flatten()
                 })
                 .collect(),
-        }
-        .render(),
-        Output::YearlyCalendar { split_in_two } => {
-            let mut months = MONTHS
-                .iter()
-                .map(|&month| {
-                    let days_before_start =
-                        chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), 1)
-                            .unwrap()
-                            .weekday()
-                            .num_days_from_monday() as usize;
+        );
 
-                    YearlyCalendarMonth {
-                        month,
-                        days: std::iter::repeat_with(|| YearlyCalendarDay::Empty { weekday: () })
+        let output = match self.output {
+            Output::MonthlyCalendar => MonthlyCalendar {
+                calendar_event_styles,
+                events: MONTHS
+                    .iter()
+                    .map(|&month| {
+                        let days_before_start =
+                            chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), 1)
+                                .unwrap()
+                                .weekday()
+                                .num_days_from_monday() as usize;
+
+                        std::iter::repeat_with(|| CalendarCell::Empty)
+                            .take(days_before_start)
+                            .chain((1..=days_in_month(year, month)).map(|day| {
+                                CalendarCell::Day {
+                                    day: EventDay { day },
+                                    events: calendar_events
+                                        .remove(&MonthAndDay { month, day })
+                                        .unwrap_or_default(),
+                                }
+                            }))
+                            .chain(std::iter::repeat_with(|| CalendarCell::Empty))
+                            .take(33)
+                            .chain(std::iter::once(CalendarCell::MonthAndYear { month, year }))
+                            .collect()
+                    })
+                    .collect(),
+            }
+            .render(),
+            Output::YearlyCalendar { split_in_two } => {
+                let mut months = MONTHS
+                    .iter()
+                    .map(|&month| {
+                        let days_before_start =
+                            chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), 1)
+                                .unwrap()
+                                .weekday()
+                                .num_days_from_monday() as usize;
+
+                        YearlyCalendarMonth {
+                            month,
+                            days: std::iter::repeat_with(|| YearlyCalendarDay::Empty {
+                                weekday: (),
+                            })
                             .take(days_before_start)
                             .chain((1..=days_in_month(year, month)).map(|day| {
                                 YearlyCalendarDay::Day {
@@ -714,92 +613,567 @@ fn main() -> color_eyre::eyre::Result<()> {
                             .zip(weekdays(Weekday::Mon))
                             .map(|(day, weekday)| day.with_weekday(weekday))
                             .collect(),
-                    }
-                })
-                .collect_vec();
+                        }
+                    })
+                    .collect_vec();
 
-            YearlyCalendar {
-                calendar_event_styles,
-                year,
-                weekday_titles: weekdays(Weekday::Mon)
-                    .take(YearlyCalendar::ROWS_COUNT)
-                    .collect(),
-                pages: if split_in_two {
-                    let latter_months = months.split_off(6);
-                    vec![
-                        YearlyCalendarPage { months },
-                        YearlyCalendarPage {
-                            months: latter_months,
-                        },
-                    ]
-                } else {
-                    vec![YearlyCalendarPage { months }]
-                },
+                YearlyCalendar {
+                    calendar_event_styles,
+                    year,
+                    weekday_titles: weekdays(Weekday::Mon)
+                        .take(YearlyCalendar::ROWS_COUNT)
+                        .collect(),
+                    pages: if split_in_two {
+                        let latter_months = months.split_off(6);
+                        vec![
+                            YearlyCalendarPage { months },
+                            YearlyCalendarPage {
+                                months: latter_months,
+                            },
+                        ]
+                    } else {
+                        vec![YearlyCalendarPage { months }]
+                    },
+                }
+                .render()
             }
-            .render()
+            Output::Diary => Diary {
+                calendar_event_styles,
+                pages: MONTHS
+                    .iter()
+                    .flat_map(|&month| {
+                        (1..=days_in_month(year, month))
+                            .map(|day| DiaryCell::Day {
+                                weekday: chrono::NaiveDate::from_ymd_opt(
+                                    year,
+                                    month.number_from_month(),
+                                    day,
+                                )
+                                .unwrap()
+                                .weekday(),
+                                day: EventDay { day },
+                                events: calendar_events
+                                    .remove(&MonthAndDay { month, day })
+                                    .unwrap_or_default(),
+                            })
+                            .chain(std::iter::repeat_with(|| DiaryCell::Empty))
+                            .chunks(16)
+                            .into_iter()
+                            .map(Vec::from_iter)
+                            .take(2)
+                            .map(|cells| DiaryPage { month, cells })
+                            .collect_vec()
+                    })
+                    .chunks(8)
+                    .into_iter()
+                    .map(Vec::from_iter)
+                    .collect(),
+            }
+            .render(),
         }
-        Output::Diary => Diary {
-            calendar_event_styles,
-            pages: MONTHS
-                .iter()
-                .flat_map(|&month| {
-                    (1..=days_in_month(year, month))
-                        .map(|day| DiaryCell::Day {
-                            weekday: chrono::NaiveDate::from_ymd_opt(
-                                year,
-                                month.number_from_month(),
-                                day,
-                            )
-                            .unwrap()
-                            .weekday(),
-                            day: EventDay { day },
-                            events: calendar_events
-                                .remove(&MonthAndDay { month, day })
-                                .unwrap_or_default(),
-                        })
-                        .chain(std::iter::repeat_with(|| DiaryCell::Empty))
-                        .chunks(16)
-                        .into_iter()
-                        .map(Vec::from_iter)
-                        .take(2)
-                        .map(|cells| DiaryPage { month, cells })
-                        .collect_vec()
-                })
-                .chunks(8)
+        .context("Failed to render calendar")?;
+
+        fn worker(output: String) -> anyhow::Result<()> {
+            let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .context("Failed to listen over HTTP")?;
+
+            let http_port = listener
+                .local_addr()
+                .context("Failed to get http address")?
+                .port();
+
+            webbrowser::open(&format!("http://127.0.0.1:{http_port}/"))
+                .context("Failed to open web browser")?;
+
+            let (mut socket, _remote_address) = listener
+                .accept()
+                .context("Failed to accept http connection")?;
+
+            for line in std::io::BufReader::new(&mut socket).lines() {
+                if line
+                    .context("Failed to read HTTP request")?
+                    .trim()
+                    .is_empty()
+                {
+                    break;
+                }
+            }
+
+            socket
+                .write_all(output.as_bytes())
+                .context("Failed to write HTTP response")
+        }
+
+        std::thread::spawn(move || {
+            if let Err(err) = worker(output) {
+                if let Err(err) =
+                    events.submit_command(SET_ERROR, ErrorMessage::new(err), druid::Target::Global)
+                {
+                    eprintln!("{err}");
+                }
+            }
+        });
+
+        Ok(())
+    }
+}
+
+macro_rules! create_keys {
+    ($($k:ident : $t:ty),* $(,)?) => {
+        $(
+            const $k: ::druid::Key::<$t> = ::druid::Key::new(concat!(env!("CARGO_PKG_NAME"), ".key.", stringify!($k)));
+        )*
+    };
+}
+
+create_keys!(
+    PADDING: f64,
+    PADDING_INSETS: druid::Insets,
+    MARKDOWN_LIST_PADDING: f64,
+    EVENT_GROUP_TITLE: ArcStr,
+);
+
+macro_rules! create_selectors {
+    ($($k:ident : $t:ty),* $(,)?) => {
+        $(
+            const $k: ::druid::Selector::<$t> = ::druid::Selector::new(concat!(env!("CARGO_PKG_NAME"), ".selector.", stringify!($k)));
+        )*
+    };
+}
+
+create_selectors!(
+    SET_ERROR: ErrorMessage,
+    SHOW_HELP: (),
+    OPEN_LINK: String,
+);
+
+struct AppController;
+
+impl AppController {
+    fn cache_path() -> Option<std::path::PathBuf> {
+        let project_directories = directories::ProjectDirs::from("", "", "calendargenerator")?;
+        let config_directory = project_directories.config_local_dir();
+
+        std::fs::create_dir_all(config_directory)
+            .context("Failed to create config directory")
+            .map_err(|err| eprintln!("{err:?}"))
+            .ok();
+
+        Some(
+            [config_directory, "calendar_file_path.txt".as_ref()]
                 .into_iter()
-                .map(Vec::from_iter)
                 .collect(),
-        }
-        .render(),
-    }
-    .unwrap();
-
-    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .wrap_err("Failed to listen over HTTP")?;
-
-    let http_port = listener
-        .local_addr()
-        .wrap_err("Failed to get http address")?
-        .port();
-
-    webbrowser::open(&format!("http://127.0.0.1:{http_port}/"))
-        .wrap_err("Failed to open web browser")?;
-
-    let (mut socket, _remote_address) = listener
-        .accept()
-        .wrap_err("Failed to accept http connection")?;
-
-    for line in std::io::BufReader::new(&mut socket).lines() {
-        if line
-            .wrap_err("Failed to read HTTP request")?
-            .trim()
-            .is_empty()
-        {
-            break;
-        }
+        )
     }
 
-    socket
-        .write_all(output.as_bytes())
-        .wrap_err("Failed to write HTTP response")
+    fn open_calendar_dialog() -> druid::Command {
+        druid::commands::SHOW_OPEN_PANEL.with(
+            druid::FileDialogOptions::new()
+                .allowed_types(vec![druid::FileSpec::new("Calendar", &["txt"])])
+                .title("Open a calendar"),
+        )
+    }
+
+    fn help() -> impl Widget<AppState> {
+        Self::help_blocks(markdown::tokenize(include_str!("../README.md"))).scroll()
+    }
+
+    fn help_blocks(blocks: Vec<markdown::Block>) -> impl Widget<AppState> {
+        blocks.into_iter().fold(
+            Flex::column().cross_axis_alignment(druid::widget::CrossAxisAlignment::Start),
+            |column, block| match block {
+                markdown::Block::Header(spans, level) => column
+                    .with_spacer(match level {
+                        1 => 0.0,
+                        2 => 19.92,
+                        3 => 18.72,
+                        4 => 21.28,
+                        5 => 22.1776,
+                        6 => 24.9776,
+                        _ => 0.0,
+                    })
+                    .with_child(Self::help_spans_with_modify_text(spans, move |text| {
+                        text.size(match level {
+                            1 => 32.0,
+                            2 => 24.0,
+                            3 => 18.72,
+                            4 => 16.0,
+                            5 => 13.28,
+                            6 => 10.72,
+                            _ => 16.0,
+                        });
+
+                        text.text_color(druid::Color::rgb8(0x56, 0x9c, 0xd6));
+
+                        text.underline(true);
+                    }))
+                    .with_spacer(match level {
+                        1 => 21.44,
+                        2 => 19.92,
+                        3 => 18.72,
+                        4 => 21.28,
+                        5 => 22.1776,
+                        6 => 24.9776,
+                        _ => 0.0,
+                    }),
+                markdown::Block::Paragraph(spans) => column.with_child(Self::help_spans(spans)),
+                markdown::Block::Blockquote(_) => unimplemented!(),
+                markdown::Block::CodeBlock(_, _) => unimplemented!(),
+                markdown::Block::OrderedList(_, _) => unimplemented!(),
+                markdown::Block::UnorderedList(list) => column.with_child(
+                    list.into_iter()
+                        .map(|item| {
+                            let row = Flex::row()
+                                .cross_axis_alignment(druid::widget::CrossAxisAlignment::Start)
+                                .with_spacer(MARKDOWN_LIST_PADDING)
+                                .with_child(Label::new("•"));
+
+                            match item {
+                                markdown::ListItem::Simple(spans) => {
+                                    row.with_child(Self::help_spans(spans))
+                                }
+                                markdown::ListItem::Paragraph(blocks) => {
+                                    row.with_child(Self::help_blocks(blocks))
+                                }
+                            }
+                        })
+                        .fold(
+                            Flex::column()
+                                .cross_axis_alignment(druid::widget::CrossAxisAlignment::Start),
+                            Flex::with_child,
+                        ),
+                ),
+                markdown::Block::Raw(_) => unimplemented!(),
+                markdown::Block::Hr => unimplemented!(),
+            },
+        )
+    }
+
+    fn apply_help_spans(
+        rows: &mut Vec<druid::text::RichTextBuilder>,
+        modify_text: &dyn Fn(&mut druid::text::AttributesAdder),
+        spans: Vec<markdown::Span>,
+    ) {
+        for span in spans {
+            let mut text_attributes = match span {
+                markdown::Span::Break => {
+                    rows.push(druid::text::RichTextBuilder::new());
+                    continue;
+                }
+                markdown::Span::Text(text) => rows.last_mut().unwrap().push(&text),
+                markdown::Span::Code(text) => {
+                    let mut text_attributes = rows.last_mut().unwrap().push(&text);
+
+                    text_attributes
+                        .font_family(druid::FontFamily::MONOSPACE)
+                        .text_color(druid::Color::rgb8(0xce, 0x91, 0x78));
+
+                    text_attributes
+                }
+                markdown::Span::Link(text, url, _title) => {
+                    let mut text_attributes = rows.last_mut().unwrap().push(&text);
+
+                    text_attributes.link(OPEN_LINK.with(url)).underline(true);
+
+                    text_attributes
+                }
+                markdown::Span::Image(_, _, _) => unimplemented!(),
+                markdown::Span::Emphasis(spans) => {
+                    Self::apply_help_spans(
+                        rows,
+                        &|text| {
+                            modify_text(text);
+                            text.style(druid::FontStyle::Italic);
+                        },
+                        spans,
+                    );
+
+                    continue;
+                }
+                markdown::Span::Strong(spans) => {
+                    Self::apply_help_spans(
+                        rows,
+                        &|text| {
+                            modify_text(text);
+                            text.weight(druid::FontWeight::BOLD);
+                        },
+                        spans,
+                    );
+
+                    continue;
+                }
+            };
+
+            modify_text(&mut text_attributes);
+        }
+    }
+
+    fn help_spans(spans: Vec<markdown::Span>) -> impl Widget<AppState> {
+        Self::help_spans_with_modify_text(spans, |_| {})
+    }
+
+    fn help_spans_with_modify_text(
+        spans: Vec<markdown::Span>,
+        modify_text: impl Fn(&mut druid::text::AttributesAdder),
+    ) -> impl Widget<AppState> {
+        let mut rows = vec![druid::text::RichTextBuilder::new()];
+
+        Self::apply_help_spans(&mut rows, &modify_text, spans);
+
+        rows.into_iter()
+            .map(|text| Label::raw().lens(druid::lens::Constant(text.build())))
+            .fold(Flex::column(), Flex::with_child)
+    }
+
+    fn parse_calendar(
+        calendar_file: &std::path::Path,
+    ) -> anyhow::Result<Vector<EventGroupDescription>> {
+        let calendar_text = std::fs::read_to_string(calendar_file)
+            .with_context(|| format!("Failed to read {}", calendar_file.display()))?;
+
+        let mut event_group_descriptions = Vec::<EventGroupDescription>::new();
+
+        for (line_num, line) in calendar_text.lines().enumerate() {
+            let line_num = line_num + 1;
+
+            let line = line.trim();
+
+            if line.is_empty() {
+                continue;
+            }
+
+            if let Some(line) = line.strip_prefix('[') {
+                let Some(title_and_style) = line.strip_suffix(']') else {
+                    anyhow::bail!(
+                        "Error on line {line_num}: Event Group titles must end with a ']'"
+                    );
+                };
+
+                let (title, style) = title_and_style
+                    .split_once(':')
+                    .map(|(title, style)| (title.trim(), Some(style.into())))
+                    .unwrap_or((title_and_style, None));
+                let id = GroupId::Group(event_group_descriptions.len());
+
+                event_group_descriptions.push(EventGroupDescription {
+                    id,
+                    title: title.trim().into(),
+                    style,
+                    events: Vector::new(),
+                    is_selected: false,
+                });
+            } else {
+                let Some(current_group) = event_group_descriptions.last_mut() else {
+                    anyhow::bail!("Calendar must start with an event group");
+                };
+
+                current_group
+                    .events
+                    .push_back(EventDescription::parse(line, current_group.id)?)
+            }
+        }
+
+        Ok(event_group_descriptions.into())
+    }
+}
+
+impl<W: Widget<AppState>> druid::widget::Controller<AppState, W> for AppController {
+    fn event(
+        &mut self,
+        child: &mut W,
+        ctx: &mut EventCtx,
+        event: &druid::Event,
+        data: &mut AppState,
+        env: &Env,
+    ) {
+        if let druid::Event::WindowConnected = event {
+            if let Some(events) = Self::cache_path().and_then(|cache_path| {
+                let path = std::fs::read_to_string(cache_path).ok()?;
+
+                AppController::parse_calendar(path.trim().as_ref()).ok()
+            }) {
+                data.event_group_descriptions = events;
+            } else {
+                ctx.submit_command(Self::open_calendar_dialog());
+            }
+        }
+
+        child.event(ctx, event, data, env)
+    }
+}
+
+impl druid::AppDelegate<AppState> for AppController {
+    fn command(
+        &mut self,
+        ctx: &mut druid::DelegateCtx,
+        _target: druid::Target,
+        command: &druid::Command,
+        data: &mut AppState,
+        _env: &Env,
+    ) -> druid::Handled {
+        if let Some(error) = command.get(SET_ERROR) {
+            data.error_message = Some(error.clone());
+
+            druid::Handled::Yes
+        } else if let Some(()) = command.get(SHOW_HELP) {
+            ctx.new_window::<AppState>(
+                druid::WindowDesc::new(AppController::help().controller(AppController))
+                    .title("Help"),
+            );
+
+            druid::Handled::Yes
+        } else if let Some(url) = command.get(OPEN_LINK) {
+            if let Err(err) = webbrowser::open(url).context("Failed to open browser") {
+                data.error_message = Some(ErrorMessage::new(err));
+            }
+
+            druid::Handled::Yes
+        } else if let Some(calendar_file) = command.get(druid::commands::OPEN_FILE) {
+            if let Err(err) =
+                Self::parse_calendar(calendar_file.path()).and_then(|event_group_descriptions| {
+                    data.event_group_descriptions = event_group_descriptions;
+
+                    if let Some(cache_path) = Self::cache_path() {
+                        std::fs::write(
+                            cache_path,
+                            calendar_file.path().as_os_str().as_encoded_bytes(),
+                        )
+                        .context("Failed to write cached calendar path")?;
+                    }
+
+                    Ok(())
+                })
+            {
+                data.error_message = Some(ErrorMessage::new(err));
+            }
+
+            druid::Handled::Yes
+        } else {
+            druid::Handled::No
+        }
+    }
+}
+
+fn app_view() -> impl Widget<AppState> {
+    Flex::column()
+        .with_child(
+            druid::widget::Maybe::or_empty(|| {
+                Flex::column()
+                    .with_child(
+                        Flex::column()
+                            .with_child(Label::new("Error!"))
+                            .with_spacer(PADDING)
+                            .with_child(Label::raw())
+                            .border(
+                                druid::theme::BORDER_DARK,
+                                druid::theme::TEXTBOX_BORDER_WIDTH,
+                            )
+                            .expand_width(),
+                    )
+                    .with_spacer(PADDING)
+                    .expand_width()
+            })
+            .lens(AppState::error_message),
+        )
+        .with_child(
+            Flex::column()
+                .with_child(Label::new("Calendar Type"))
+                .with_spacer(PADDING)
+                .with_child(RadioGroup::column([
+                    ("Month", Output::MonthlyCalendar),
+                    (
+                        "Year",
+                        Output::YearlyCalendar {
+                            split_in_two: false,
+                        },
+                    ),
+                    ("Half-Year", Output::YearlyCalendar { split_in_two: true }),
+                    ("Diary", Output::Diary),
+                ]))
+                .with_spacer(PADDING)
+                .border(
+                    druid::theme::BORDER_DARK,
+                    druid::theme::TEXTBOX_BORDER_WIDTH,
+                )
+                .expand_width()
+                .lens(AppState::output),
+        )
+        .with_spacer(PADDING)
+        .with_flex_child(
+            Flex::column()
+                .with_child(Label::new("Include Event Groups"))
+                .with_spacer(PADDING)
+                .with_flex_child(
+                    List::new(|| {
+                        Checkbox::new(|_data: &bool, env: &Env| env.get(EVENT_GROUP_TITLE))
+                            .lens(EventGroupDescription::is_selected)
+                            .env_scope(|env: &mut Env, data: &EventGroupDescription| {
+                                env.set(EVENT_GROUP_TITLE, data.title.clone())
+                            })
+                    })
+                    .align_horizontal(druid::UnitPoint::CENTER)
+                    .scroll()
+                    .vertical()
+                    .lens(AppState::event_group_descriptions),
+                    1.0,
+                )
+                .border(
+                    druid::theme::BORDER_DARK,
+                    druid::theme::TEXTBOX_BORDER_WIDTH,
+                )
+                .expand(),
+            1.0,
+        )
+        .with_spacer(PADDING)
+        .with_child(
+            Button::new("Create").on_click(|ctx, data: &mut AppState, _| {
+                if let Err(err) = data.show_calendar(ctx.get_external_handle()) {
+                    data.error_message = Some(ErrorMessage::new(err));
+                }
+            }),
+        )
+        .padding(PADDING_INSETS)
+}
+
+fn main() -> anyhow::Result<()> {
+    let app_name = "Create Calendar";
+
+    druid::AppLauncher::with_window(
+        druid::WindowDesc::new(app_view().controller(AppController))
+            .title(app_name)
+            .menu(move |_, _, _| {
+                druid::Menu::new(app_name)
+                    .entry(
+                        druid::MenuItem::new("Open Calendar")
+                            .command(AppController::open_calendar_dialog()),
+                    )
+                    .separator()
+                    .entry(druid::MenuItem::new("Help").command(SHOW_HELP))
+            }),
+    )
+    .delegate(AppController)
+    .configure_env(|env, _| {
+        let padding = env.get(druid::theme::WIDGET_PADDING_HORIZONTAL);
+
+        env.set(PADDING, padding);
+        env.set(PADDING_INSETS, padding);
+
+        env.set(MARKDOWN_LIST_PADDING, 2.0 * padding)
+    })
+    .launch(AppState {
+        error_message: None,
+        year: chrono::Local::now().year(),
+        output: Output::MonthlyCalendar,
+        event_group_descriptions: Vector::new(),
+    })?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn create_help() {
+        super::AppController::help();
+    }
 }

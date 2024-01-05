@@ -1,6 +1,7 @@
 [package]
 name = "diary"
 version = "0.1.0"
+authors = ["Samuel Hicks"]
 edition = "2021"
 license = "MIT"
 
@@ -9,11 +10,13 @@ default-run = "diary"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.79"
 askama = "0.12.1"
 chrono = "0.4.31"
 clap = { version = "4.4.11", features = ["derive"] }
-color-eyre = "0.6.2"
 computus = "1.1.0"
+directories = "5.0.1"
+druid = { version = "0.8.3", features = ["im"] }
 itertools = "0.12.0"
-thiserror = "1.0.52"
+markdown = "0.3.0"
 webbrowser = "0.8.12"

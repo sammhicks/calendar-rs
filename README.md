@@ -1,11 +1,12 @@
 # calendar-rs
 
-A printable calendar generator.
+Generate a printable calendar or diary.
 
 ## Event format
 
   + The start of an event group is a title surrounded by square brackets (`[` and `]`)
-    + If the title contains a `:`, then everything before it is the title, and everything after is a style declaration using CSS, e.g.
+    + If the title contains a `:`, then everything before it is the title,
+      and everything after is a style declaration using [CSS](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Text), e.g.
       + `color:red` for red text
       + `color:rgb(255,255,0)` for yellow text
       + `color:blue;font-weight:bold` for bold blue text
