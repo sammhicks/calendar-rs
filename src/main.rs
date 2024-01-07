@@ -11,8 +11,8 @@ use chrono::{Datelike, Month, Weekday};
 use druid::{
     im::Vector,
     text::ArcStr,
-    widget::{prelude::*, Button, Checkbox, Flex, Label, List, RadioGroup},
-    Data, Lens, Widget, WidgetExt,
+    widget::{prelude::*, Button, Checkbox, Flex, Label, List, RadioGroup, Stepper},
+    Data, Lens, LensExt, Widget, WidgetExt,
 };
 use itertools::Itertools;
 
@@ -145,32 +145,29 @@ impl Event {
         title: &str,
         group_id: GroupId,
     ) -> anyhow::Result<Option<Self>> {
-        Ok(Some(
-            match n.cmp(&0) {
-                std::cmp::Ordering::Equal => {
-                    anyhow::bail!("nth weekday cannot be 0");
-                }
-                std::cmp::Ordering::Greater => {
-                    let first = find_date(year, month, 1, weekday, 1);
-
-                    let event_day = first + chrono::Duration::weeks((n - 1).into());
-
-                    (event_day.with_day0(first.day0()) == Some(first))
-                        .then(|| Self::new(event_day, title.into(), group_id).ok())
-                        .flatten()
-                }
-                std::cmp::Ordering::Less => {
-                    let last = find_date(year, month, days_in_month(year, month), weekday, -1);
-
-                    let event_day = last + chrono::Duration::weeks((n + 1).into());
-
-                    (event_day.with_day0(last.day0()) == Some(last))
-                        .then(|| Self::new(event_day, title.into(), group_id).ok())
-                        .flatten()
-                }
+        Ok(match n.cmp(&0) {
+            std::cmp::Ordering::Equal => {
+                anyhow::bail!("nth weekday cannot be 0");
             }
-            .with_context(|| format!("{n}'th {weekday} does not exist"))?,
-        ))
+            std::cmp::Ordering::Greater => {
+                let first = find_date(year, month, 1, weekday, 1);
+
+                let event_day = first + chrono::Duration::weeks((n - 1).into());
+
+                (event_day.with_day0(first.day0()) == Some(first))
+                    .then(|| Self::new(event_day, title.into(), group_id).ok())
+                    .flatten()
+            }
+            std::cmp::Ordering::Less => {
+                let last = find_date(year, month, days_in_month(year, month), weekday, -1);
+
+                let event_day = last + chrono::Duration::weeks((n + 1).into());
+
+                (event_day.with_day0(last.day0()) == Some(last))
+                    .then(|| Self::new(event_day, title.into(), group_id).ok())
+                    .flatten()
+            }
+        })
     }
 }
 
@@ -574,7 +571,7 @@ impl AppState {
                                 }
                             }))
                             .chain(std::iter::repeat_with(|| CalendarCell::Empty))
-                            .take(33)
+                            .take(40)
                             .chain(std::iter::once(CalendarCell::MonthAndYear { month, year }))
                             .collect()
                     })
@@ -727,8 +724,7 @@ macro_rules! create_keys {
 }
 
 create_keys!(
-    PADDING: f64,
-    PADDING_INSETS: druid::Insets,
+    WIDGET_PADDING_INSETS: druid::Insets,
     MARKDOWN_LIST_PADDING: f64,
     EVENT_GROUP_TITLE: ArcStr,
 );
@@ -1062,7 +1058,7 @@ fn app_view() -> impl Widget<AppState> {
                     .with_child(
                         Flex::column()
                             .with_child(Label::new("Error!"))
-                            .with_spacer(PADDING)
+                            .with_default_spacer()
                             .with_child(Label::raw())
                             .border(
                                 druid::theme::BORDER_DARK,
@@ -1070,15 +1066,36 @@ fn app_view() -> impl Widget<AppState> {
                             )
                             .expand_width(),
                     )
-                    .with_spacer(PADDING)
+                    .with_default_spacer()
                     .expand_width()
             })
             .lens(AppState::error_message),
         )
         .with_child(
             Flex::column()
+                .with_child(Label::new("Year"))
+                .with_default_spacer()
+                .with_child(
+                    Flex::row()
+                        .with_child(Label::dynamic(|data, _env| format!("{data}")))
+                        .with_child(Stepper::new()),
+                )
+                .with_default_spacer()
+                .border(
+                    druid::theme::BORDER_DARK,
+                    druid::theme::TEXTBOX_BORDER_WIDTH,
+                )
+                .expand_width()
+                .lens(AppState::year.then(druid::lens::Map::new(
+                    |&year: &i32| year.into(),
+                    |current_year, new_year: f64| *current_year = new_year as i32,
+                ))),
+        )
+        .with_default_spacer()
+        .with_child(
+            Flex::column()
                 .with_child(Label::new("Calendar Type"))
-                .with_spacer(PADDING)
+                .with_default_spacer()
                 .with_child(RadioGroup::column([
                     ("Month", Output::MonthlyCalendar),
                     (
@@ -1090,7 +1107,7 @@ fn app_view() -> impl Widget<AppState> {
                     ("Half-Year", Output::YearlyCalendar { split_in_two: true }),
                     ("Diary", Output::Diary),
                 ]))
-                .with_spacer(PADDING)
+                .with_default_spacer()
                 .border(
                     druid::theme::BORDER_DARK,
                     druid::theme::TEXTBOX_BORDER_WIDTH,
@@ -1098,11 +1115,11 @@ fn app_view() -> impl Widget<AppState> {
                 .expand_width()
                 .lens(AppState::output),
         )
-        .with_spacer(PADDING)
+        .with_default_spacer()
         .with_flex_child(
             Flex::column()
                 .with_child(Label::new("Include Event Groups"))
-                .with_spacer(PADDING)
+                .with_default_spacer()
                 .with_flex_child(
                     List::new(|| {
                         Checkbox::new(|_data: &bool, env: &Env| env.get(EVENT_GROUP_TITLE))
@@ -1124,7 +1141,7 @@ fn app_view() -> impl Widget<AppState> {
                 .expand(),
             1.0,
         )
-        .with_spacer(PADDING)
+        .with_default_spacer()
         .with_child(
             Button::new("Create").on_click(|ctx, data: &mut AppState, _| {
                 if let Err(err) = data.show_calendar(ctx.get_external_handle()) {
@@ -1132,7 +1149,7 @@ fn app_view() -> impl Widget<AppState> {
                 }
             }),
         )
-        .padding(PADDING_INSETS)
+        .padding(WIDGET_PADDING_INSETS)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -1149,16 +1166,20 @@ fn main() -> anyhow::Result<()> {
                     )
                     .separator()
                     .entry(druid::MenuItem::new("Help").command(SHOW_HELP))
-            }),
+            })
+            .window_size(Size::new(800.0, 600.0)),
     )
     .delegate(AppController)
     .configure_env(|env, _| {
-        let padding = env.get(druid::theme::WIDGET_PADDING_HORIZONTAL);
+        let padding_horizontal = env.get(druid::theme::WIDGET_PADDING_HORIZONTAL);
+        let padding_vertical = env.get(druid::theme::WIDGET_PADDING_VERTICAL);
 
-        env.set(PADDING, padding);
-        env.set(PADDING_INSETS, padding);
+        env.set(
+            WIDGET_PADDING_INSETS,
+            druid::Insets::uniform_xy(padding_horizontal, padding_vertical),
+        );
 
-        env.set(MARKDOWN_LIST_PADDING, 2.0 * padding)
+        env.set(MARKDOWN_LIST_PADDING, 2.0 * padding_horizontal)
     })
     .launch(AppState {
         error_message: None,
