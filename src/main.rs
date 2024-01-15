@@ -286,6 +286,7 @@ struct YearlyCalendarPage {
 #[derive(Template)]
 #[template(path = "yearly_calendar.html")]
 struct YearlyCalendar {
+    title: &'static str,
     calendar_event_styles: CalendarEventStyles,
     year: i32,
     weekday_titles: Vec<Weekday>,
@@ -615,6 +616,7 @@ impl AppState {
                     .collect_vec();
 
                 YearlyCalendar {
+                    title: if split_in_two { "Half-Year" } else { "Year" },
                     calendar_event_styles,
                     year,
                     weekday_titles: weekdays(Weekday::Mon)

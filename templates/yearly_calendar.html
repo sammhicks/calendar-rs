@@ -5,19 +5,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Monthly Calendar</title>
+    <title>{{title}}</title>
     <style>
         body {
             margin: 0;
             padding: 0;
 
             font-family: sans-serif;
-            font-size: calc(100vh / 80);
+            font-size: calc(100vh / 60);
         }
 
         section {
             width: 100vw;
-            height: 100vh;
+            height: calc(100vh - 2pt);
             page-break-after: always;
 
             display: grid;
@@ -56,8 +56,15 @@
             align-items: center;
         }
 
-        .cell span {
+        .day {
+            font-family: monospace;
             margin-right: 1ch;
+        }
+
+        .events {
+            display: flex;
+            flex-flow: column nowrap;
+            align-items: start;
         }
 
         .top {
@@ -92,10 +99,12 @@
         <span class="cell {{background_class}}"></span>
         {% when YearlyCalendarDay::Day with {weekday, day, events} %}
         <span class="cell {{background_class}}">
-            <span>{{day}}</span>
-            {% for event in events %}
-            <span class="event {{event.group_id}}">{{event.title}}</span>
-            {% endfor %}
+            <span class="day">{{day}}</span>
+            <span class="events">
+                {% for event in events %}
+                <span class="event {{event.group_id}}">{{event.title}}</span>
+                {% endfor %}
+            </span>
         </span>
         {% endmatch %}
         {% endfor %}

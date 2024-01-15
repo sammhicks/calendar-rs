@@ -12,7 +12,7 @@
             padding: 0;
 
             font-family: sans-serif;
-            font-size: calc(100vh / 80);
+            font-size: calc(100vh / 60);
         }
 
         body>div {
@@ -22,7 +22,7 @@
             grid-auto-flow: column;
 
             width: 100vw;
-            height: 100vh;
+            height: calc(100vh - 2pt);
             page-break-after: always;
         }
 
@@ -30,8 +30,14 @@
             background-color: rgb(255, 255, 153);
         }
 
-        span.date {
+        .day {
             font-family: monospace;
+        }
+
+        .events {
+            display: flex;
+            flex-flow: column nowrap;
+            align-items: start;
         }
 
         section {
@@ -73,10 +79,12 @@
             <div></div>
             {% when DiaryCell::Day with { weekday, day, events } %}
             <div {% if weekday.is_weekend() %}class="shadedBackground" {% endif %}>
-                <span class="date">{{weekday}} {{day}}</span>
-                {% for event in events %}
-                <span class="{{event.group_id}}">{{event.title}}</span>
-                {% endfor %}
+                <span class="day">{{day}}</span>
+                <span class="events">
+                    {% for event in events %}
+                    <span class="event {{event.group_id}}">{{event.title}}</span>
+                    {% endfor %}
+                </span>
             </div>
             {% endmatch %}
             {% endfor %}
