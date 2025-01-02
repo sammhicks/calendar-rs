@@ -648,7 +648,7 @@ impl AppState {
                 pages: MONTHS
                     .iter()
                     .flat_map(|&month| {
-                        (1..=days_in_month(year, month))
+                        let mut days = (1..=days_in_month(year, month))
                             .map(|day| DiaryCell::Day {
                                 weekday: chrono::NaiveDate::from_ymd_opt(
                                     year,
@@ -662,13 +662,18 @@ impl AppState {
                                     .remove(&MonthAndDay { month, day })
                                     .unwrap_or_default(),
                             })
-                            .chain(std::iter::repeat_with(|| DiaryCell::Empty))
-                            .chunks(16)
-                            .into_iter()
-                            .map(Vec::from_iter)
-                            .take(2)
-                            .map(|cells| DiaryPage { month, cells })
-                            .collect_vec()
+                            .chain(std::iter::repeat_with(|| DiaryCell::Empty));
+
+                        [
+                            DiaryPage {
+                                month,
+                                cells: days.by_ref().take(16).collect(),
+                            },
+                            DiaryPage {
+                                month,
+                                cells: days.by_ref().take(15).collect(),
+                            },
+                        ]
                     })
                     .chunks(8)
                     .into_iter()
