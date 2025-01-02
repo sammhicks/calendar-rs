@@ -56,25 +56,11 @@ fn days_in_month(year: i32, month: Month) -> u32 {
 }
 
 trait WeekdayExt {
-    fn name(self) -> &'static str;
-
     #[allow(clippy::wrong_self_convention)]
     fn is_weekend(self) -> bool;
 }
 
 impl WeekdayExt for Weekday {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Mon => "Monday",
-            Self::Tue => "Tuesday",
-            Self::Wed => "Wednesday",
-            Self::Thu => "Thursday",
-            Self::Fri => "Friday",
-            Self::Sat => "Saturday",
-            Self::Sun => "Sunday",
-        }
-    }
-
     fn is_weekend(self) -> bool {
         matches!(self, Self::Sat | Self::Sun)
     }
@@ -113,61 +99,6 @@ impl fmt::Display for GroupId {
             Self::NoGroup => Ok(()),
             Self::Group(id) => write!(f, "eventgroup{id}"),
         }
-    }
-}
-
-#[derive(Debug)]
-struct Event {
-    month: Month,
-    day: u32,
-    title: ArcStr,
-    group_id: GroupId,
-}
-
-impl Event {
-    fn new(date: chrono::NaiveDate, title: ArcStr, group_id: GroupId) -> anyhow::Result<Self> {
-        let month = Month::try_from((date.month0() + 1) as u8).context("Failed to get month")?;
-        let day = date.day0() + 1;
-
-        Ok(Self {
-            month,
-            day,
-            title,
-            group_id,
-        })
-    }
-
-    fn nth_weekday(
-        year: i32,
-        month: Month,
-        weekday: Weekday,
-        n: i16,
-        title: &str,
-        group_id: GroupId,
-    ) -> anyhow::Result<Option<Self>> {
-        Ok(match n.cmp(&0) {
-            std::cmp::Ordering::Equal => {
-                anyhow::bail!("nth weekday cannot be 0");
-            }
-            std::cmp::Ordering::Greater => {
-                let first = find_date(year, month, 1, weekday, 1);
-
-                let event_day = first + chrono::Duration::weeks((n - 1).into());
-
-                (event_day.with_day0(first.day0()) == Some(first))
-                    .then(|| Self::new(event_day, title.into(), group_id).ok())
-                    .flatten()
-            }
-            std::cmp::Ordering::Less => {
-                let last = find_date(year, month, days_in_month(year, month), weekday, -1);
-
-                let event_day = last + chrono::Duration::weeks((n + 1).into());
-
-                (event_day.with_day0(last.day0()) == Some(last))
-                    .then(|| Self::new(event_day, title.into(), group_id).ok())
-                    .flatten()
-            }
-        })
     }
 }
 
@@ -339,7 +270,7 @@ enum Output {
     Diary,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum EventDescriptionData {
     FixedDate {
         month: Month,
@@ -354,6 +285,100 @@ enum EventDescriptionData {
     DaysAfterEaster {
         day_offset: i16,
     },
+    FuzzySunday(Box<EventDescriptionData>),
+}
+
+impl EventDescriptionData {
+    fn dates(&self, year: i32) -> anyhow::Result<Vec<chrono::NaiveDate>> {
+        match *self {
+            EventDescriptionData::FixedDate { month, day } => {
+                Ok(vec![chrono::NaiveDate::from_ymd_opt(
+                    year,
+                    month.number_from_month(),
+                    day,
+                )
+                .with_context(|| {
+                    format!("Invalid date {year}/{}/{day}", month.name())
+                })?])
+            }
+            EventDescriptionData::NthWeekdayOfMonth { n, weekday, month } => month
+                .as_ref()
+                .map_or(&MONTHS[..], std::slice::from_ref)
+                .iter()
+                .filter_map(|&month| {
+                    fn nth_weekday(
+                        year: i32,
+                        month: Month,
+                        weekday: Weekday,
+                        n: i16,
+                    ) -> anyhow::Result<Option<chrono::NaiveDate>> {
+                        Ok(match n.cmp(&0) {
+                            std::cmp::Ordering::Equal => {
+                                anyhow::bail!("nth weekday cannot be 0");
+                            }
+                            std::cmp::Ordering::Greater => {
+                                let first = find_date(year, month, 1, weekday, 1);
+
+                                let event_day = first + chrono::Duration::weeks((n - 1).into());
+
+                                (event_day.with_day0(first.day0()) == Some(first))
+                                    .then_some(event_day)
+                            }
+                            std::cmp::Ordering::Less => {
+                                let last =
+                                    find_date(year, month, days_in_month(year, month), weekday, -1);
+
+                                let event_day = last + chrono::Duration::weeks((n + 1).into());
+
+                                (event_day.with_day0(last.day0()) == Some(last))
+                                    .then_some(event_day)
+                            }
+                        })
+                    }
+
+                    nth_weekday(year, month, weekday, n).transpose()
+                })
+                .collect(),
+            EventDescriptionData::DaysAfterEaster { day_offset } => {
+                let easter = computus::gregorian(year)
+                    .map_err(|err| anyhow::anyhow!("Failed to calculate Easter: {err}"))
+                    .map(|computus::Date { year, month, day }| {
+                        chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
+                    })?;
+
+                Ok(vec![easter + chrono::Duration::days(day_offset.into())])
+            }
+            EventDescriptionData::FuzzySunday(ref event_description_data) => event_description_data
+                .dates(year)?
+                .into_iter()
+                .map(|date| match date.weekday() {
+                    Weekday::Mon => date
+                        .checked_sub_days(chrono::Days::new(1))
+                        .with_context(|| format!("No date before {date}")),
+                    Weekday::Sat => date
+                        .checked_add_days(chrono::Days::new(1))
+                        .with_context(|| format!("No date after {date}")),
+                    _ => Ok(date),
+                })
+                .collect(),
+        }
+    }
+}
+
+trait StrExt {
+    fn case_insensitive_strip_prefix<'a>(&'a self, prefix: &str) -> Option<&'a Self>;
+}
+
+impl StrExt for str {
+    fn case_insensitive_strip_prefix<'a>(&'a self, prefix: &str) -> Option<&'a Self> {
+        let mut chars = self.chars();
+
+        prefix
+            .chars()
+            .zip(&mut chars)
+            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+            .then_some(chars.as_str())
+    }
 }
 
 #[derive(Clone)]
@@ -365,6 +390,20 @@ struct EventDescription {
 
 impl EventDescription {
     fn parse(input: &str, group_id: GroupId) -> anyhow::Result<Self> {
+        if let Some(input) = input.case_insensitive_strip_prefix("ho repl ") {
+            let Self {
+                title,
+                data,
+                group_id,
+            } = Self::parse(input, group_id)?;
+
+            return Ok(Self {
+                title,
+                data: EventDescriptionData::FuzzySunday(Box::new(data)),
+                group_id,
+            });
+        }
+
         let Some((index, category, title)) = Some(input).and_then(|input| {
             let space_or_tab = |c: char| c == ' ' || c == '\t';
 
@@ -480,54 +519,22 @@ impl AppState {
 
             for &EventDescription {
                 ref title,
-                data,
+                ref data,
                 group_id,
             } in events
             {
-                let events = match data {
-                    EventDescriptionData::FixedDate { month, day } => vec![Event::new(
-                        chrono::NaiveDate::from_ymd_opt(year, month.number_from_month(), day)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("Invalid date {year}/{}/{day}", month.name())
-                            })?,
-                        title.clone(),
-                        group_id,
-                    )?],
+                for date in data.dates(year)? {
+                    let month =
+                        Month::try_from((date.month()) as u8).context("Failed to get month")?;
+                    let day = date.day();
 
-                    EventDescriptionData::NthWeekdayOfMonth { n, weekday, month } => month
-                        .as_ref()
-                        .map_or(&MONTHS[..], std::slice::from_ref)
-                        .iter()
-                        .filter_map(|&month| {
-                            Event::nth_weekday(year, month, weekday, n, title, group_id).transpose()
-                        })
-                        .collect::<Result<_, _>>()?,
-                    EventDescriptionData::DaysAfterEaster { day_offset } => {
-                        let easter = computus::gregorian(year)
-                            .map_err(|err| anyhow::anyhow!("Failed to calculate Easter: {err}"))
-                            .map(|computus::Date { year, month, day }| {
-                                chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
-                            })?;
-
-                        vec![Event::new(
-                            easter + chrono::Duration::days(day_offset.into()),
-                            title.clone(),
-                            group_id,
-                        )?]
-                    }
-                };
-
-                for Event {
-                    month,
-                    day,
-                    title,
-                    group_id,
-                } in events
-                {
                     calendar_events
                         .entry(MonthAndDay { month, day })
                         .or_insert_with(Vec::new)
-                        .push(EventWithGroupId { title, group_id });
+                        .push(EventWithGroupId {
+                            title: title.clone(),
+                            group_id,
+                        });
                 }
             }
         }
