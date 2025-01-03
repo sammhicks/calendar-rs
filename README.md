@@ -19,3 +19,9 @@ Generate a printable calendar or diary.
     + e.g. `-1 Friday/July Event Name` is an event called "Event Name" on the last Friday of July
   + `offset` easter `title` - A single event `offset` days from Easter Sunday
     + e.g. `1 easter Easter Monday` is an event called "Easter Monday" on the day after Easter Sunday
+
+## Event Date Modifiers
+
+Event dates can be modified by prefixing them with an event modifier:
+
+  + `ho repl ` will change the date to the nearest Sunday if the specified date is a Saturday or a Monday
