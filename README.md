@@ -25,3 +25,4 @@ Generate a printable calendar or diary.
 Event dates can be modified by prefixing them with an event modifier:
 
   + `ho repl ` will change the date to the nearest Sunday if the specified date is a Saturday or a Monday
+  + `sunday before ` will change the date to the previous sunday. Also works with other weekdays.

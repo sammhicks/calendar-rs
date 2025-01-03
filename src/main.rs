@@ -55,12 +55,38 @@ fn days_in_month(year: i32, month: Month) -> u32 {
     }
 }
 
-trait WeekdayExt {
+trait WeekdayExt: Sized + 'static {
+    const ALL: &'static [Self];
+
+    fn name(self) -> &'static str;
+
     #[allow(clippy::wrong_self_convention)]
     fn is_weekend(self) -> bool;
 }
 
 impl WeekdayExt for Weekday {
+    const ALL: &'static [Self] = &[
+        Self::Mon,
+        Self::Tue,
+        Self::Wed,
+        Self::Thu,
+        Self::Fri,
+        Self::Sat,
+        Self::Sun,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Mon => "Monday",
+            Self::Tue => "Tuesday",
+            Self::Wed => "Wednesday",
+            Self::Thu => "Thursday",
+            Self::Fri => "Friday",
+            Self::Sat => "Saturday",
+            Self::Sun => "Sunday",
+        }
+    }
+
     fn is_weekend(self) -> bool {
         matches!(self, Self::Sat | Self::Sun)
     }
@@ -286,6 +312,10 @@ enum EventDescriptionData {
         day_offset: i16,
     },
     FuzzySunday(Box<EventDescriptionData>),
+    WeekdayBefore {
+        weekday: Weekday,
+        base: Box<EventDescriptionData>,
+    },
 }
 
 impl EventDescriptionData {
@@ -361,6 +391,20 @@ impl EventDescriptionData {
                     _ => Ok(date),
                 })
                 .collect(),
+            EventDescriptionData::WeekdayBefore { weekday, ref base } => base
+                .dates(year)?
+                .into_iter()
+                .map(|date| {
+                    let offset = if weekday == date.weekday() {
+                        7
+                    } else {
+                        date.weekday().days_since(weekday)
+                    };
+
+                    date.checked_sub_days(chrono::Days::new(offset.into()))
+                        .with_context(|| format!("Cannot calculate {weekday} before {date}"))
+                })
+                .collect(),
         }
     }
 }
@@ -400,6 +444,30 @@ impl EventDescription {
             return Ok(Self {
                 title,
                 data: EventDescriptionData::FuzzySunday(Box::new(data)),
+                group_id,
+            });
+        }
+
+        if let Some((weekday, input)) = Weekday::ALL.iter().find_map(|&weekday| {
+            Some((
+                weekday,
+                input
+                    .case_insensitive_strip_prefix(weekday.name())?
+                    .case_insensitive_strip_prefix(" before ")?,
+            ))
+        }) {
+            let Self {
+                title,
+                data,
+                group_id,
+            } = Self::parse(input, group_id)?;
+
+            return Ok(Self {
+                title,
+                data: EventDescriptionData::WeekdayBefore {
+                    weekday,
+                    base: Box::new(data),
+                },
                 group_id,
             });
         }
