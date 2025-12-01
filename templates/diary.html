@@ -91,7 +91,7 @@
             <div></div>
             {% when DiaryCell::Day with { weekday, day, events } %}
             <div {% if weekday.is_weekend() %}class="shadedBackground" {% endif %}>
-                <span class="day">{{day}}</span>
+                <span class="day">{{weekday.name().first_n_characters(2)}} {{day}}</span>
                 <span class="events">
                     {% for event in events %}
                     <span class="event {{event.group_id}}">{{event.title}}</span>

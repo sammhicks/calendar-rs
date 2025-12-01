@@ -411,6 +411,8 @@ impl EventDescriptionData {
 
 trait StrExt {
     fn case_insensitive_strip_prefix<'a>(&'a self, prefix: &str) -> Option<&'a Self>;
+
+    fn first_n_characters(&self, n: usize) -> String;
 }
 
 impl StrExt for str {
@@ -420,8 +422,12 @@ impl StrExt for str {
         prefix
             .chars()
             .zip(&mut chars)
-            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+            .all(|(a, b)| char::eq_ignore_ascii_case(&a, &b))
             .then_some(chars.as_str())
+    }
+
+    fn first_n_characters(&self, n: usize) -> String {
+        self.chars().take(n).collect()
     }
 }
 
