@@ -24,6 +24,8 @@
             width: 100vw;
             height: calc(100vh - 2pt);
             page-break-after: always;
+
+            row-gap: 1em;
         }
 
         .shadedBackground {
@@ -56,10 +58,6 @@
             flex-flow: column nowrap;
         }
 
-        section:nth-child(even) {
-            margin-top: 1em;
-        }
-
         section>* {
             border-bottom: 1pt solid black;
         }
@@ -70,10 +68,7 @@
             display: flex;
             flex-flow: row nowrap;
             align-items: center;
-        }
-
-        section>div>span {
-            margin-right: 1ch;
+            gap: 1ch;
         }
     </style>
     {{calendar_event_styles|safe}}
